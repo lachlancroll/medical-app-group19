@@ -22,7 +22,7 @@ export default function SignInPage() {
   };
 
   return (
-    <View style={styles.container}>
+    <View style={styles.contain}>
       <Text style={styles.title}>Sign In</Text>
       <TextInput style={styles.input} placeholder="Email" autoCapitalize="none" value={email} onChangeText={setEmail} />
       <TextInput style={styles.input} placeholder="Password" secureTextEntry value={password} onChangeText={setPassword} />
