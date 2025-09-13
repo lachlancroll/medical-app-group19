@@ -38,11 +38,51 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="explore"
+        name="appointments"
         options={{
-          title: "Explore",
+          title: "Appointments",
           tabBarIcon: ({ color }) => (
-            <IconSymbol size={28} name="paperplane.fill" color={color} />
+            <IconSymbol size={28} name="calendar" color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="medications"
+        options={{
+          title: "Medications",
+          tabBarIcon: ({ color }) => (
+            <IconSymbol size={28} name="pills.fill" color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="prescriptions"
+        options={{
+          title: "Prescriptions",
+          tabBarIcon: ({ color }) => (
+            <IconSymbol size={28} name="doc.text.fill" color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="emergency"
+        options={{
+          title: "Emergency",
+          tabBarIcon: ({ color }) => (
+            <IconSymbol
+              size={28}
+              name="exclamationmark.triangle.fill"
+              color={color}
+            />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="profile"
+        options={{
+          title: "Profile",
+          tabBarIcon: ({ color }) => (
+            <IconSymbol size={28} name="person.fill" color={color} />
           ),
         }}
       />
