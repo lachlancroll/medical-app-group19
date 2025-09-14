@@ -1,62 +1,76 @@
-// app/(auth)/signin.tsx (or wherever your SignInPage lives)
+// app/signup.tsx
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Button, StyleSheet, Text, TextInput, View } from 'react-native';
 import { supabase } from '../supabaseClient';
 
-export default function SignInPage() {
+export default function SignUpPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState<string>('');
+  const [confirm, setConfirm] = useState('');
+  const [fullName, setFullName] = useState(''); // optional, goes into user_metadata
+  const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // If already authed, skip screen
+  // If already authed, skip this screen
   useEffect(() => {
     (async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (session) router.replace('/(tabs)');
     })();
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
       if (session) router.replace('/(tabs)');
     });
     return () => sub.subscription.unsubscribe();
   }, [router]);
 
-  const handleSignIn = async () => {
-    setLoading(true); setError('');
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    setLoading(false);
-    if (error) setError(error.message);
-    // success will redirect via onAuthStateChange
-  };
-
   const handleSignUp = async () => {
-    setLoading(true); setError('');
-    const { data, error } = await supabase.auth.signUp({ email, password });
+    if (!email || !password) return setError('Email and password are required.');
+    if (password.length < 6) return setError('Password must be at least 6 characters.');
+    if (password !== confirm) return setError('Passwords do not match.');
+
+    setLoading(true);
+    setError('');
+    setInfo('');
+
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: { data: { full_name: fullName || undefined } }, // user_metadata
+    });
+
     setLoading(false);
     if (error) return setError(error.message);
 
-    // If email confirmations are ON in Supabase Auth settings,
-    // user must verify their email before session starts.
+    // If email confirmation is ON, there won't be a session yet:
     if (!data.session) {
-      setError('Check your inbox to confirm your email, then sign in.');
+      setInfo('Check your email to confirm your account, then come back and sign in.');
+    } else {
+      // If confirmation is OFF, onAuthStateChange will redirect to /(tabs)
+      setInfo('Account created!');
     }
-    // If confirmations are OFF, onAuthStateChange will redirect.
   };
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>{mode === 'signin' ? 'Sign In' : 'Create Account'}</Text>
+      <Text style={styles.title}>Create Account</Text>
+
+      <TextInput
+        style={styles.input}
+        placeholder="Full name (optional)"
+        value={fullName}
+        onChangeText={setFullName}
+      />
 
       <TextInput
         style={styles.input}
         placeholder="Email"
-        keyboardType="email-address"
         autoCapitalize="none"
         autoComplete="email"
+        keyboardType="email-address"
         value={email}
         onChangeText={setEmail}
       />
@@ -65,30 +79,30 @@ export default function SignInPage() {
         style={styles.input}
         placeholder="Password"
         secureTextEntry
-        autoComplete="password"
+        autoComplete="password-new"
         value={password}
         onChangeText={setPassword}
       />
 
+      <TextInput
+        style={styles.input}
+        placeholder="Confirm password"
+        secureTextEntry
+        autoComplete="password-new"
+        value={confirm}
+        onChangeText={setConfirm}
+      />
+
       {!!error && <Text style={styles.error}>{error}</Text>}
+      {!!info && <Text style={styles.info}>{info}</Text>}
 
       {loading ? (
         <ActivityIndicator />
-      ) : mode === 'signin' ? (
-        <>
-          <Button title="Sign In" onPress={handleSignIn} />
-          <Text style={styles.link} onPress={() => { setMode('signup'); setError(''); }}>
-            Need an account? Sign up
-          </Text>
-        </>
       ) : (
         <>
           <Button title="Create Account" onPress={handleSignUp} />
-          <Text style={styles.link} onPress={() => { setMode('signin'); setError(''); }}>
+          <Text style={styles.link} onPress={() => router.replace('/signin')}>
             Have an account? Sign in
-          </Text>
-          <Text style={styles.link} onPress={() => router.replace('/signup')}>
-            Need an account? Sign up
           </Text>
         </>
       )}
@@ -101,5 +115,6 @@ const styles = StyleSheet.create({
   title: { fontSize: 24, textAlign: 'center', marginBottom: 20 },
   input: { borderWidth: 1, borderColor: '#ccc', padding: 10, marginBottom: 10, borderRadius: 8 },
   error: { color: 'red', marginBottom: 10, textAlign: 'center' },
+  info: { color: 'green', marginBottom: 10, textAlign: 'center' },
   link: { marginTop: 12, textAlign: 'center', textDecorationLine: 'underline' },
 });

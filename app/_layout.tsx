@@ -6,7 +6,10 @@ import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
+import 'react-native-get-random-values';
 import 'react-native-reanimated';
+import 'react-native-url-polyfill/auto';
+
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
