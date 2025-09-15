@@ -1,6 +1,5 @@
 // app/(tabs)/index.tsx
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
 import React, { useMemo } from "react";
 import {
@@ -11,16 +10,19 @@ import {
   Text,
   View,
 } from "react-native";
+import { supabase } from '../../supabaseClient'; // add this import
 
 export default function HomePage() {
   const router = useRouter();
 
   const handleSignOut = async () => {
     try {
-      await AsyncStorage.removeItem("authed");
-      router.replace("/signin");
-    } catch (e) {
-      Alert.alert("Error", "Could not sign out. Please try again.");
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+      // optional: immediate UX change; auth listener in _layout should also redirect
+      router.replace('/signin');
+    } catch (e: any) {
+      Alert.alert('Error', e?.message ?? 'Could not sign out. Please try again.');
     }
   };
 
@@ -29,8 +31,16 @@ export default function HomePage() {
       {/* Header */}
       <View style={styles.headerRow}>
         <Text style={styles.title}>Home</Text>
-        <Pressable onPress={handleSignOut} accessibilityLabel="Sign out">
-          <Text style={styles.signOut}>Sign out</Text>
+
+        {/* Profile button (replaces "Sign out") */}
+        <Pressable
+          onPress={() => router.push('/profile')}
+          accessibilityRole="button"
+          accessibilityLabel="Open profile"
+          style={styles.profileBtn}
+        >
+          <MaterialCommunityIcons name="account-circle-outline" size={22} color="#007AFF" />
+          <Text style={styles.profileText}>Profile</Text>
         </Pressable>
       </View>
 
@@ -39,12 +49,17 @@ export default function HomePage() {
         <LargeActionButton
           label="Medications"
           icon={<MaterialCommunityIcons name="pill" size={30} />}
-          onPress={() => Alert.alert("Coming soon", "Medications screen")}
+          onPress={() => router.push('/medications')}
         />
         <LargeActionButton
           label="Appointments"
           icon={<Ionicons name="calendar" size={30} />}
           onPress={() => Alert.alert("Coming soon", "Appointments screen")}
+        />
+        <LargeActionButton
+          label="AI Assistant"
+          icon={<MaterialCommunityIcons name="robot-happy-outline" size={30} />}
+          onPress={() => Alert.alert("Coming soon", "AI Assistant screen")}
         />
       </View>
 
@@ -218,13 +233,19 @@ const styles = StyleSheet.create({
   },
 
   calendarCard: {
-    flex: 1,
     backgroundColor: "#FFFFFF",
     borderRadius: 16,
     borderWidth: 1,
     borderColor: "#E2E8F0",
     padding: 12,
+    alignSelf: 'stretch', // keep full width
+    flexShrink: 0,        // don’t grow to fill space
+    // optional niceties:
+    // maxWidth: 480,
+    // alignSelf: 'center',
+    // marginBottom: 16,
   },
+
   calendarHeader: {
     alignItems: "center",
     paddingVertical: 8,
@@ -291,4 +312,6 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     fontSize: 16,
   },
+  profileBtn: { flexDirection: 'row', alignItems: 'center' },
+  profileText: { marginLeft: 6, fontSize: 14, color: '#007AFF', fontWeight: '600' },
 });
