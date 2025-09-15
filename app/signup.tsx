@@ -18,11 +18,11 @@ export default function SignUpPage() {
   useEffect(() => {
     (async () => {
       const { data: { session } } = await supabase.auth.getSession();
-      if (session) router.replace('/(tabs)');
+      if (session) router.replace('/');
     })();
 
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
-      if (session) router.replace('/(tabs)');
+      if (session) router.replace('/');
     });
     return () => sub.subscription.unsubscribe();
   }, [router]);

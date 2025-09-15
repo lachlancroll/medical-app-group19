@@ -32,12 +32,17 @@ type PrescribedItem = {
   id: string; // prescription_items.id
   sig_text: string | null;
   medication: Medication | null;
-  // parent prescription fields (flattened onto the item)
   prescription_id: string;
-  prescribed_at: string; // timestamp
-  start_date: string | null; // date
-  end_date: string | null; // date
+  prescribed_at: string;
+  start_date: string | null;
+  end_date: string | null;
   status: string; // 'active' | ...
+};
+
+type MedOption = {
+  id: string;
+  label: string;     // "Panadol (Paracetamol) 500 mg tablet"
+  sublabel?: string; // e.g., "ATC: N02BE01"
 };
 
 // ---------- helpers ----------
@@ -48,17 +53,14 @@ async function ensurePatientProfile(uid: string) {
   if (error) throw error;
 }
 
-// created_by in prescriptions points to public.users(id)
 async function ensureAppUserRow(uid: string) {
   const { data: u } = await supabase.auth.getUser();
   const email = u?.user?.email ?? null;
-  const { error } = await supabase
-    .from("users")
-    .upsert({ id: uid, email }, { onConflict: "id" });
+  const { error } = await supabase.from("users").upsert({ id: uid, email }, { onConflict: "id" });
   if (error) throw error;
 }
 
-// find a doctor linked to this patient via the join table
+// find a doctor linked to this patient via the join table (currently unused in add flow)
 async function getLinkedDoctorId(patientId: string): Promise<string> {
   const { data, error } = await supabase
     .from("doctor_patient")
@@ -69,11 +71,7 @@ async function getLinkedDoctorId(patientId: string): Promise<string> {
 
   if (error) throw error;
   const doctorId = data?.doctor_id as string | undefined;
-  if (!doctorId) {
-    throw new Error(
-      "No linked doctor found for this patient. Ask an admin to add a row in doctor_patient."
-    );
-  }
+  if (!doctorId) throw new Error("No linked doctor found for this patient.");
   return doctorId;
 }
 
@@ -84,12 +82,19 @@ export default function MedicationsScreen() {
   const [loading, setLoading] = useState(true);
   const [items, setItems] = useState<PrescribedItem[]>([]);
 
-  // Add modal state
+  // -------- Add modal state --------
   const [showAdd, setShowAdd] = useState(false);
   const [medId, setMedId] = useState("");
   const [sig, setSig] = useState("");
 
-  // -------- Load current user and fetch their prescriptions --------
+  // -------- Medication dropdown/search state --------
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [medSearch, setMedSearch] = useState("");
+  const [medLoading, setMedLoading] = useState(false);
+  const [medOptions, setMedOptions] = useState<MedOption[]>([]);
+  const [selectedMed, setSelectedMed] = useState<MedOption | null>(null);
+
+  // -------- Load current user's prescriptions --------
   const fetchForCurrentUser = useCallback(async () => {
     setLoading(true);
     const { data: userData, error: userErr } = await supabase.auth.getUser();
@@ -159,7 +164,7 @@ export default function MedicationsScreen() {
     fetchForCurrentUser();
   }, []);
 
-  // Optional grouping
+  // -------- Optional grouping --------
   const { activeItems, otherItems } = useMemo(() => {
     const a = items.filter((i) => i.status === "active");
     const o = items.filter((i) => i.status !== "active");
@@ -231,11 +236,74 @@ export default function MedicationsScreen() {
     );
   };
 
-  // -------- Add medication: ensure FK targets, get linked doctor, insert --------
+  // -------- Medication search (server-side) --------
+  const fetchMedications = useCallback(
+    async (q: string) => {
+      setMedLoading(true);
+
+      const orFilter = q?.trim()
+        ? `generic_name.ilike.%${q.trim()}%,brand_name.ilike.%${q.trim()}%`
+        : undefined;
+
+      let query = supabase
+        .from("medications")
+        .select("id, generic_name, brand_name, form, strength_value, strength_unit, atc_code")
+        .order("generic_name", { ascending: true })
+        .limit(50);
+
+      if (orFilter) query = query.or(orFilter);
+
+      const { data, error } = await query;
+      setMedLoading(false);
+
+      if (error) {
+        console.error(error);
+        Alert.alert("Error", "Couldn't load medications.");
+        setMedOptions([]);
+        return;
+      }
+
+      const opts: MedOption[] = (data ?? []).map((m: any) => {
+        const main =
+          (m.brand_name ? `${m.brand_name} (${m.generic_name})` : m.generic_name) ?? "Medication";
+
+        const dose = [m.strength_value, m.strength_unit].filter(Boolean).join(" ");
+        const form = m.form ? ` ${m.form}` : "";
+        const label = [main, dose || "", form].join("").trim();
+
+        return {
+          id: m.id,
+          label: label || main,
+          sublabel: m.atc_code ? `ATC: ${m.atc_code}` : undefined,
+        };
+      });
+
+      setMedOptions(opts);
+    },
+    []
+  );
+
+  // Debounce search while modal open
+  useEffect(() => {
+    if (!showAdd) return;
+    const t = setTimeout(() => fetchMedications(medSearch), 200);
+    return () => clearTimeout(t);
+  }, [showAdd, medSearch, fetchMedications]);
+
+  // Initial load when opening the Add modal
+  useEffect(() => {
+    if (showAdd) fetchMedications("");
+  }, [showAdd, fetchMedications]);
+
+  // -------- Add medication flow --------
   const handleAddMedication = async () => {
     try {
-      if (!medId.trim() || !sig.trim()) {
-        Alert.alert("Missing info", "Enter a Medication ID and SIG.");
+      if (!medId.trim()) {
+        Alert.alert("Select a medication", "Please choose a medication from the list.");
+        return;
+      }
+      if (!sig.trim()) {
+        Alert.alert("Missing SIG", "Please enter directions for use.");
         return;
       }
 
@@ -243,11 +311,9 @@ export default function MedicationsScreen() {
       if (uErr || !u?.user?.id) throw new Error("Not signed in.");
       const uid = u.user.id;
 
-      // ensure FK targets exist
       await ensurePatientProfile(uid);
       await ensureAppUserRow(uid);
 
-      // create prescription
       const { data: rx, error: rxErr } = await supabase
         .from("prescriptions")
         .insert([{ patient_id: uid, created_by: uid }])
@@ -255,7 +321,6 @@ export default function MedicationsScreen() {
         .single();
       if (rxErr) throw rxErr;
 
-      // add prescription item
       const { error: itemErr } = await supabase
         .from("prescription_items")
         .insert([
@@ -269,6 +334,7 @@ export default function MedicationsScreen() {
 
       setShowAdd(false);
       setMedId("");
+      setSelectedMed(null);
       setSig("");
       await fetchForCurrentUser();
       Alert.alert("Added", "Medication added to your prescriptions.");
@@ -279,10 +345,10 @@ export default function MedicationsScreen() {
 
   return (
     <ThemedView style={styles.container}>
-      {/* Header with back arrow + title + actions */}
+      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity
-          onPress={() => router.replace("/(tabs)")}
+          onPress={() => router.navigate("/")}
           accessibilityLabel="Back to Home"
           style={styles.backBtn}
         >
@@ -343,16 +409,91 @@ export default function MedicationsScreen() {
           </View>
 
           <View style={{ paddingHorizontal: 20, paddingTop: 20, gap: 16 }}>
+            {/* Medication picker */}
             <View>
-              <ThemedText style={styles.inputLabel}>Medication ID</ThemedText>
-              <TextInput
-                value={medId}
-                onChangeText={setMedId}
-                placeholder="UUID from medications table"
-                autoCapitalize="none"
-                style={styles.input}
-              />
+              <ThemedText style={styles.inputLabel}>Medication</ThemedText>
+
+              <TouchableOpacity
+                onPress={() => setPickerOpen((v) => !v)}
+                style={[
+                  styles.input,
+                  { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+                ]}
+                accessibilityLabel="Open medication dropdown"
+              >
+                <ThemedText style={{ color: selectedMed ? "#111827" : "#6B7280" }}>
+                  {selectedMed ? selectedMed.label : "Search & select a medication"}
+                </ThemedText>
+                <Ionicons name={pickerOpen ? "chevron-up" : "chevron-down"} size={18} color="#6B7280" />
+              </TouchableOpacity>
+
+              {pickerOpen && (
+                <View
+                  style={{
+                    marginTop: 8,
+                    borderWidth: 1,
+                    borderColor: "#E5E5EA",
+                    borderRadius: 8,
+                    overflow: "hidden",
+                  }}
+                >
+                  <View style={{ paddingHorizontal: 12, paddingVertical: 10 }}>
+                    <TextInput
+                      value={medSearch}
+                      onChangeText={setMedSearch}
+                      placeholder="Type to search by generic or brand name"
+                      style={{ fontSize: 16 }}
+                      autoCapitalize="none"
+                    />
+                  </View>
+
+                  <View style={{ height: 220 }}>
+                    {medLoading ? (
+                      <View style={{ alignItems: "center", justifyContent: "center", height: 220 }}>
+                        <ThemedText>Loading…</ThemedText>
+                      </View>
+                    ) : (
+                      <FlatList
+                        data={medOptions}
+                        keyExtractor={(o) => o.id}
+                        keyboardShouldPersistTaps="handled"
+                        ItemSeparatorComponent={() => (
+                          <View style={{ height: 1, backgroundColor: "#F1F5F9" }} />
+                        )}
+                        renderItem={({ item }) => (
+                          <TouchableOpacity
+                            onPress={() => {
+                              setSelectedMed(item);
+                              setMedId(item.id); // feeds existing add flow
+                              setPickerOpen(false);
+                            }}
+                            style={{ paddingHorizontal: 12, paddingVertical: 12 }}
+                          >
+                            <ThemedText style={{ fontSize: 16, fontWeight: "600" }}>
+                              {item.label}
+                            </ThemedText>
+                            {!!item.sublabel && (
+                              <ThemedText style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>
+                                {item.sublabel}
+                              </ThemedText>
+                            )}
+                          </TouchableOpacity>
+                        )}
+                        ListEmptyComponent={
+                          <View style={{ padding: 16 }}>
+                            <ThemedText style={{ color: "#6B7280" }}>
+                              No medications found. Try a different search.
+                            </ThemedText>
+                          </View>
+                        }
+                      />
+                    )}
+                  </View>
+                </View>
+              )}
             </View>
+
+            {/* SIG / Directions */}
             <View>
               <ThemedText style={styles.inputLabel}>SIG / Directions</ThemedText>
               <TextInput

@@ -10,7 +10,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { supabase } from '../../supabaseClient'; // add this import
+import { supabase } from '../supabaseClient'; // add this import
 
 export default function HomePage() {
   const router = useRouter();

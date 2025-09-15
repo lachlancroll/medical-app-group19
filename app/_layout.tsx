@@ -23,7 +23,7 @@ export default function RootLayout() {
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
       const onAuthScreen = ['signin', 'signup', 'auth'].includes(segments[0] as string);
       if (!session && !onAuthScreen) router.replace('/signin');
-      if (session && onAuthScreen) router.replace('/(tabs)');
+      if (session && onAuthScreen) router.replace('/');
     });
 
     // initial check
@@ -31,7 +31,7 @@ export default function RootLayout() {
       const { data: { session } } = await supabase.auth.getSession();
       const onAuthScreen = ['signin', 'signup', 'auth'].includes(segments[0] as string);
       if (!session && !onAuthScreen) router.replace('/signin');
-      if (session && onAuthScreen) router.replace('/(tabs)');
+      if (session && onAuthScreen) router.replace('/');
       setReady(true);
     })();
 
