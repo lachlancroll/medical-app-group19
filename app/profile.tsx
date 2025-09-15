@@ -8,14 +8,14 @@ import { useColorScheme } from '@/hooks/useColorScheme';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
-    Alert,
-    Modal,
-    ScrollView,
-    StyleSheet,
-    Switch,
-    TextInput,
-    TouchableOpacity,
-    View
+  Alert,
+  Modal,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  TextInput,
+  TouchableOpacity,
+  View
 } from 'react-native';
 
 import { supabase } from '../supabaseClient';
