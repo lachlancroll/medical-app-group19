@@ -5,8 +5,9 @@ import { ThemedView } from "@/components/ThemedView";
 import { Colors } from "@/constants/Colors";
 import { useColorScheme } from "@/hooks/useColorScheme";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { RealtimePostgresInsertPayload } from "@supabase/supabase-js";
 import { useRouter } from "expo-router";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   FlatList,
@@ -60,27 +61,17 @@ async function ensureAppUserRow(uid: string) {
   if (error) throw error;
 }
 
-// find a doctor linked to this patient via the join table (currently unused in add flow)
-async function getLinkedDoctorId(patientId: string): Promise<string> {
-  const { data, error } = await supabase
-    .from("doctor_patient")
-    .select("doctor_id")
-    .eq("patient_id", patientId)
-    .limit(1)
-    .maybeSingle();
-
-  if (error) throw error;
-  const doctorId = data?.doctor_id as string | undefined;
-  if (!doctorId) throw new Error("No linked doctor found for this patient.");
-  return doctorId;
-}
-
+// ---------- Component ----------
 export default function MedicationsScreen() {
   const colorScheme = useColorScheme();
   const router = useRouter();
 
   const [loading, setLoading] = useState(true);
   const [items, setItems] = useState<PrescribedItem[]>([]);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+
+  // Track IDs to prevent duplicates when optimistic add + realtime both occur
+  const seenItemIdsRef = useRef<Set<string>>(new Set());
 
   // -------- Add modal state --------
   const [showAdd, setShowAdd] = useState(false);
@@ -93,6 +84,20 @@ export default function MedicationsScreen() {
   const [medLoading, setMedLoading] = useState(false);
   const [medOptions, setMedOptions] = useState<MedOption[]>([]);
   const [selectedMed, setSelectedMed] = useState<MedOption | null>(null);
+
+  // Load and cache current user ID early
+  useEffect(() => {
+    (async () => {
+      const { data: userData, error } = await supabase.auth.getUser();
+      if (error) {
+        console.error(error);
+        setCurrentUserId(null);
+        return;
+      }
+      const uid = userData.user?.id ?? null;
+      setCurrentUserId(uid);
+    })();
+  }, []);
 
   // -------- Load current user's prescriptions --------
   const fetchForCurrentUser = useCallback(async () => {
@@ -156,6 +161,11 @@ export default function MedicationsScreen() {
         }))
       );
 
+    // update seen ids
+    const s = new Set<string>();
+    flattened.forEach((i) => s.add(i.id));
+    seenItemIdsRef.current = s;
+
     setItems(flattened);
     setLoading(false);
   }, []);
@@ -163,6 +173,99 @@ export default function MedicationsScreen() {
   useEffect(() => {
     fetchForCurrentUser();
   }, []);
+
+  // -------- Realtime subscription --------
+  useEffect(() => {
+    if (!currentUserId) return;
+
+    // Subscribe to INSERT/UPDATE/DELETE on prescription_items
+    const channel = supabase
+      .channel(`rx-items:${currentUserId}`)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "prescription_items" },
+        async (payload: RealtimePostgresInsertPayload<any>) => {
+          try {
+            const row = payload.new as {
+              id: string;
+              prescription_id: string;
+              medication_id: string;
+              sig_text: string | null;
+            };
+
+            // Avoid duplicates if we already have it (optimistic add or previously loaded)
+            if (seenItemIdsRef.current.has(row.id)) return;
+
+            // Fetch the parent prescription; ensure it belongs to current user (RLS should already enforce, but double-check)
+            const { data: rx, error: rxErr } = await supabase
+              .from("prescriptions")
+              .select("id, patient_id, prescribed_at, start_date, end_date, status")
+              .eq("id", row.prescription_id)
+              .maybeSingle();
+
+            if (rxErr || !rx) return;
+            if (rx.patient_id !== currentUserId) return; // not mine → ignore
+
+            // Fetch medication details
+            const { data: medRow, error: medErr } = await supabase
+              .from("medications")
+              .select("id, generic_name, brand_name, form, strength_value, strength_unit")
+              .eq("id", row.medication_id)
+              .maybeSingle();
+
+            if (medErr) {
+              console.error(medErr);
+              return;
+            }
+
+            const newItem: PrescribedItem = {
+              id: row.id,
+              sig_text: row.sig_text,
+              medication: (medRow ?? null) as Medication | null,
+              prescription_id: row.prescription_id,
+              prescribed_at: rx.prescribed_at ?? new Date().toISOString(),
+              start_date: rx.start_date,
+              end_date: rx.end_date,
+              status: rx.status ?? "active",
+            };
+
+            setItems((prev) => {
+              if (prev.some((p) => p.id === row.id)) return prev;
+              const next = [newItem, ...prev];
+              seenItemIdsRef.current.add(row.id);
+              return next;
+            });
+          } catch (e) {
+            console.error("Realtime INSERT handler error:", e);
+          }
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "prescription_items" },
+        async (payload) => {
+          const row = payload.new as { id: string; sig_text: string | null };
+          setItems((prev) =>
+            prev.map((p) => (p.id === row.id ? { ...p, sig_text: row.sig_text } : p))
+          );
+          seenItemIdsRef.current.add(row.id);
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "DELETE", schema: "public", table: "prescription_items" },
+        async (payload) => {
+          const row = payload.old as { id: string };
+          setItems((prev) => prev.filter((p) => p.id !== row.id));
+          seenItemIdsRef.current.delete(row.id);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentUserId]);
 
   // -------- Optional grouping --------
   const { activeItems, otherItems } = useMemo(() => {
@@ -295,7 +398,7 @@ export default function MedicationsScreen() {
     if (showAdd) fetchMedications("");
   }, [showAdd, fetchMedications]);
 
-  // -------- Add medication flow --------
+  // -------- Add medication flow (optimistic prepend) --------
   const handleAddMedication = async () => {
     try {
       if (!medId.trim()) {
@@ -314,14 +417,16 @@ export default function MedicationsScreen() {
       await ensurePatientProfile(uid);
       await ensureAppUserRow(uid);
 
+      // Create prescription and return metadata we need to render immediately
       const { data: rx, error: rxErr } = await supabase
         .from("prescriptions")
         .insert([{ patient_id: uid, created_by: uid }])
-        .select("id")
+        .select("id, prescribed_at, start_date, end_date, status")
         .single();
       if (rxErr) throw rxErr;
 
-      const { error: itemErr } = await supabase
+      // Insert the item and return its id + sig_text
+      const { data: itemRow, error: itemErr } = await supabase
         .from("prescription_items")
         .insert([
           {
@@ -329,14 +434,45 @@ export default function MedicationsScreen() {
             medication_id: medId.trim(),
             sig_text: sig.trim(),
           },
-        ]);
+        ])
+        .select("id, sig_text")
+        .single();
       if (itemErr) throw itemErr;
 
+      // Fetch the medication row to render details
+      const { data: medRow, error: medErr } = await supabase
+        .from("medications")
+        .select("id, generic_name, brand_name, form, strength_value, strength_unit")
+        .eq("id", medId.trim())
+        .single();
+      if (medErr) throw medErr;
+
+      // Build the prescribed item and prepend to list (optimistic UI)
+      const newItem: PrescribedItem = {
+        id: itemRow.id,
+        sig_text: itemRow.sig_text,
+        medication: medRow as Medication,
+        prescription_id: rx.id,
+        prescribed_at: rx.prescribed_at ?? new Date().toISOString(),
+        start_date: rx.start_date,
+        end_date: rx.end_date,
+        status: rx.status ?? "active",
+      };
+
+      setItems((prev) => {
+        if (prev.some((p) => p.id === newItem.id)) return prev;
+        const next = [newItem, ...prev];
+        seenItemIdsRef.current.add(newItem.id);
+        return next;
+      });
+
+      // Reset UI
       setShowAdd(false);
       setMedId("");
       setSelectedMed(null);
       setSig("");
-      await fetchForCurrentUser();
+
+      // Optional: toast
       Alert.alert("Added", "Medication added to your prescriptions.");
     } catch (e: any) {
       Alert.alert("Error", e?.message ?? "Could not add medication.");
@@ -437,58 +573,58 @@ export default function MedicationsScreen() {
                     overflow: "hidden",
                   }}
                 >
-                  <View style={{ paddingHorizontal: 12, paddingVertical: 10 }}>
-                    <TextInput
-                      value={medSearch}
-                      onChangeText={setMedSearch}
-                      placeholder="Type to search by generic or brand name"
-                      style={{ fontSize: 16 }}
-                      autoCapitalize="none"
-                    />
-                  </View>
-
-                  <View style={{ height: 220 }}>
-                    {medLoading ? (
-                      <View style={{ alignItems: "center", justifyContent: "center", height: 220 }}>
-                        <ThemedText>Loading…</ThemedText>
-                      </View>
-                    ) : (
-                      <FlatList
-                        data={medOptions}
-                        keyExtractor={(o) => o.id}
-                        keyboardShouldPersistTaps="handled"
-                        ItemSeparatorComponent={() => (
-                          <View style={{ height: 1, backgroundColor: "#F1F5F9" }} />
-                        )}
-                        renderItem={({ item }) => (
-                          <TouchableOpacity
-                            onPress={() => {
-                              setSelectedMed(item);
-                              setMedId(item.id); // feeds existing add flow
-                              setPickerOpen(false);
-                            }}
-                            style={{ paddingHorizontal: 12, paddingVertical: 12 }}
-                          >
-                            <ThemedText style={{ fontSize: 16, fontWeight: "600" }}>
-                              {item.label}
-                            </ThemedText>
-                            {!!item.sublabel && (
-                              <ThemedText style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>
-                                {item.sublabel}
-                              </ThemedText>
-                            )}
-                          </TouchableOpacity>
-                        )}
-                        ListEmptyComponent={
-                          <View style={{ padding: 16 }}>
-                            <ThemedText style={{ color: "#6B7280" }}>
-                              No medications found. Try a different search.
-                            </ThemedText>
-                          </View>
-                        }
+                    <View style={{ paddingHorizontal: 12, paddingVertical: 10 }}>
+                      <TextInput
+                        value={medSearch}
+                        onChangeText={setMedSearch}
+                        placeholder="Type to search by generic or brand name"
+                        style={{ fontSize: 16 }}
+                        autoCapitalize="none"
                       />
-                    )}
-                  </View>
+                    </View>
+
+                    <View style={{ height: 220 }}>
+                      {medLoading ? (
+                        <View style={{ alignItems: "center", justifyContent: "center", height: 220 }}>
+                          <ThemedText>Loading…</ThemedText>
+                        </View>
+                      ) : (
+                        <FlatList
+                          data={medOptions}
+                          keyExtractor={(o) => o.id}
+                          keyboardShouldPersistTaps="handled"
+                          ItemSeparatorComponent={() => (
+                            <View style={{ height: 1, backgroundColor: "#F1F5F9" }} />
+                          )}
+                          renderItem={({ item }) => (
+                            <TouchableOpacity
+                              onPress={() => {
+                                setSelectedMed(item);
+                                setMedId(item.id); // feeds existing add flow
+                                setPickerOpen(false);
+                              }}
+                              style={{ paddingHorizontal: 12, paddingVertical: 12 }}
+                            >
+                              <ThemedText style={{ fontSize: 16, fontWeight: "600" }}>
+                                {item.label}
+                              </ThemedText>
+                              {!!item.sublabel && (
+                                <ThemedText style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>
+                                  {item.sublabel}
+                                </ThemedText>
+                              )}
+                            </TouchableOpacity>
+                          )}
+                          ListEmptyComponent={
+                            <View style={{ padding: 16 }}>
+                              <ThemedText style={{ color: "#6B7280" }}>
+                                No medications found. Try a different search.
+                              </ThemedText>
+                            </View>
+                          }
+                        />
+                      )}
+                    </View>
                 </View>
               )}
             </View>
