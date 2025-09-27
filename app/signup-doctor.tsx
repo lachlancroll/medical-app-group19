@@ -1,7 +1,7 @@
 // app/signup.tsx
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Button, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Button, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { supabase } from '../supabaseClient';
 
 export default function SignUpPage() {
@@ -13,6 +13,7 @@ export default function SignUpPage() {
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [loading, setLoading] = useState(false);
+  const [isDoctorConfirmed, setIsDoctorConfirmed] = useState(false);
 
   // If already authed, skip this screen
   useEffect(() => {
@@ -36,16 +37,41 @@ export default function SignUpPage() {
     setError('');
     setInfo('');
 
+    // Sign up with Supabase Auth
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
-      options: { data: { full_name: fullName || undefined, isDoctor: false } }, // user_metadata
+      options: { data: { full_name: fullName || undefined, isDoctor: true } },
     });
 
-    setLoading(false);
-    if (error) return setError(error.message);
+    if (error) {
+      setLoading(false);
+      return setError(error.message);
+    }
 
-    // If email confirmation is ON, there won't be a session yet:
+    // Add user to public.users table
+    // Wait for user to confirm email if confirmation is ON
+    let userEmail: any = email;
+    if (data.user) {
+      userEmail = data.user.email;
+    }
+
+    // Insert into users table
+    const { error: insertError } = await supabase
+      .from('users')
+      .insert([
+        {
+          email: userEmail,
+          isDoctor: true,
+        },
+      ]);
+
+    setLoading(false);
+
+    if (insertError) {
+      return setError('Account created, but failed to save user profile.');
+    }
+
     if (!data.session) {
       setInfo('Check your email to confirm your account, then come back and sign in.');
     } else {
@@ -56,7 +82,7 @@ export default function SignUpPage() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Create Account</Text>
+      <Text style={styles.title}>Create Doctor Account</Text>
 
       <TextInput
         style={styles.input}
@@ -93,6 +119,23 @@ export default function SignUpPage() {
         onChangeText={setConfirm}
       />
 
+      {/* Checkbox for doctor confirmation */}
+      <View style={styles.checkboxContainer}>
+        <Pressable
+          style={styles.checkbox}
+          onPress={() => setIsDoctorConfirmed((prev) => !prev)}
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked: isDoctorConfirmed }}
+        >
+          <View style={[styles.checkboxBox, isDoctorConfirmed && styles.checkboxBoxChecked]}>
+            {isDoctorConfirmed && <Text style={styles.checkboxTick}>✓</Text>}
+          </View>
+          <Text style={styles.checkboxLabel}>
+            I confirm that I am a registered medical practitioner
+          </Text>
+        </Pressable>
+      </View>
+
       {!!error && <Text style={styles.error}>{error}</Text>}
       {!!info && <Text style={styles.info}>{info}</Text>}
 
@@ -100,7 +143,11 @@ export default function SignUpPage() {
         <ActivityIndicator />
       ) : (
         <>
-          <Button title="Create Account" onPress={handleSignUp} />
+          <Button
+            title="Create Account"
+            onPress={handleSignUp}
+            disabled={!isDoctorConfirmed}
+          />
           <Text style={styles.link} onPress={() => router.replace('/signin')}>
             Have an account? Sign in
           </Text>
@@ -117,4 +164,37 @@ const styles = StyleSheet.create({
   error: { color: 'red', marginBottom: 10, textAlign: 'center' },
   info: { color: 'green', marginBottom: 10, textAlign: 'center' },
   link: { marginTop: 12, textAlign: 'center', textDecorationLine: 'underline' },
+  checkboxContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  checkbox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  checkboxBox: {
+    width: 22,
+    height: 22,
+    borderWidth: 1,
+    borderColor: '#888',
+    borderRadius: 4,
+    marginRight: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+  },
+  checkboxBoxChecked: {
+    backgroundColor: '#4caf50',
+    borderColor: '#4caf50',
+  },
+  checkboxTick: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 16,
+  },
+  checkboxLabel: {
+    fontSize: 15,
+    flexShrink: 1,
+  },
 });

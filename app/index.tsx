@@ -1,8 +1,9 @@
 // app/(tabs)/index.tsx
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   Pressable,
   SafeAreaView,
@@ -10,41 +11,49 @@ import {
   Text,
   View,
 } from "react-native";
-import { supabase } from '../supabaseClient'; // add this import
+import { supabase } from '../supabaseClient';
 
 export default function HomePage() {
   const router = useRouter();
+  const [user, setUser] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
 
-  const handleSignOut = async () => {
-    try {
-      const { error } = await supabase.auth.signOut();
-      if (error) throw error;
-      // optional: immediate UX change; auth listener in _layout should also redirect
-      router.replace('/signin');
-    } catch (e: any) {
-      Alert.alert('Error', e?.message ?? 'Could not sign out. Please try again.');
-    }
-  };
+  useEffect(() => {
+    (async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      setUser(user);
+      setLoading(false);
+    })();
+  }, []);
 
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <ActivityIndicator />
+      </SafeAreaView>
+    );
+  }
+
+  if (!user) {
+    // Not signed in, redirect to signin
+    router.replace('/signin');
+    return null;
+  }
+
+  // Check if user is doctor
+  const isDoctor = user?.user_metadata?.isDoctor;
+
+  return isDoctor ? (
+    <DoctorHome user={user} router={router} />
+  ) : (
+    <PatientHome user={user} router={router} />
+  );
+}
+
+function PatientHome({ user, router }: { user: any, router: any }) {
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header */}
-      <View style={styles.headerRow}>
-        <Text style={styles.title}>Home</Text>
-
-        {/* Profile button (replaces "Sign out") */}
-        <Pressable
-          onPress={() => router.push('/profile')}
-          accessibilityRole="button"
-          accessibilityLabel="Open profile"
-          style={styles.profileBtn}
-        >
-          <MaterialCommunityIcons name="account-circle-outline" size={22} color="#007AFF" />
-          <Text style={styles.profileText}>Profile</Text>
-        </Pressable>
-      </View>
-
-      {/* Big action buttons (full width, stacked) */}
+      <Header router={router} />
       <View style={styles.actionsColumn}>
         <LargeActionButton
           label="Medications"
@@ -62,12 +71,50 @@ export default function HomePage() {
           onPress={() => Alert.alert("Coming soon", "AI Assistant screen")}
         />
       </View>
-
-      {/* Calendar mock (non-functional) */}
       <View style={styles.calendarCard}>
         <SimpleCalendar />
       </View>
     </SafeAreaView>
+  );
+}
+
+function DoctorHome({ user, router }: { user: any, router: any }) {
+  return (
+    <SafeAreaView style={styles.container}>
+      <Header router={router} />
+      <View style={styles.actionsColumn}>
+        <LargeActionButton
+          label="Patients List"
+          icon={<MaterialCommunityIcons name="account-group-outline" size={30} />}
+          onPress={() => router.push('/patients')}
+        />
+        <LargeActionButton
+          label="Appointments"
+          icon={<Ionicons name="calendar" size={30} />}
+          onPress={() => router.push('/doctor-appointments')}
+        />
+      </View>
+      <View style={styles.calendarCard}>
+        <SimpleCalendar />
+      </View>
+    </SafeAreaView>
+  );
+}
+
+function Header({ router }: { router: any }) {
+  return (
+    <View style={styles.headerRow}>
+      <Text style={styles.title}>Home</Text>
+      <Pressable
+        onPress={() => router.push('/profile')}
+        accessibilityRole="button"
+        accessibilityLabel="Open profile"
+        style={styles.profileBtn}
+      >
+        <MaterialCommunityIcons name="account-circle-outline" size={22} color="#007AFF" />
+        <Text style={styles.profileText}>Profile</Text>
+      </Pressable>
+    </View>
   );
 }
 

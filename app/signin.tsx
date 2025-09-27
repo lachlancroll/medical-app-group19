@@ -80,6 +80,9 @@ export default function SignInPage() {
           <Text style={styles.link} onPress={() => { setMode('signup'); setError(''); }}>
             Need an account? Sign up
           </Text>
+          <Text style={styles.link} onPress={() => { router.replace('/signup-doctor'); }}>
+            Need an doctor account? Sign up as Doctor
+          </Text>
         </>
       ) : (
         <>
