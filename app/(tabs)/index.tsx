@@ -61,6 +61,11 @@ export default function HomePage() {
           icon={<MaterialCommunityIcons name="robot-happy-outline" size={30} />}
           onPress={() => Alert.alert("Coming soon", "AI Assistant screen")}
         />
+        <LargeActionButton
+          label="Medications"
+          icon={<MaterialCommunityIcons name="cached" size={30} />}
+          onPress={() => router.push('/prescription-renewals')}
+        />
       </View>
 
       {/* Calendar mock (non-functional) */}
