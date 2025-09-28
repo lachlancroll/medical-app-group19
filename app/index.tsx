@@ -59,7 +59,7 @@ export default function HomePage() {
         <LargeActionButton
           label="AI Assistant"
           icon={<MaterialCommunityIcons name="robot-happy-outline" size={30} />}
-          onPress={() => Alert.alert("Coming soon", "AI Assistant screen")}
+          onPress={() => router.push('/assistant')}
         />
       </View>
 

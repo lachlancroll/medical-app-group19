@@ -1,5 +1,6 @@
 {
   "name": "group19medical",
+  "type": "module",
   "main": "expo-router/entry",
   "version": "1.0.0",
   "scripts": {
@@ -17,6 +18,8 @@
     "@react-navigation/elements": "^2.3.8",
     "@react-navigation/native": "^7.1.6",
     "@supabase/supabase-js": "^2.57.4",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.2",
     "expo": "~53.0.22",
     "expo-blur": "~14.1.5",
     "expo-constants": "~17.1.7",
@@ -30,6 +33,9 @@
     "expo-symbols": "~0.4.5",
     "expo-system-ui": "~5.0.11",
     "expo-web-browser": "~14.2.0",
+    "express": "^5.1.0",
+    "node-fetch": "^3.3.2",
+    "openai": "^5.23.1",
     "react": "19.0.0",
     "react-dom": "19.0.0",
     "react-native": "0.79.6",
