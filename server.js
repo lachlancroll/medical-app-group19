@@ -1,37 +1,36 @@
-// server.js
 import express from 'express';
 import cors from 'cors';
+import bodyParser from 'body-parser';
+import axios from 'axios';
 import dotenv from 'dotenv';
-import fetch from 'node-fetch';
-
 dotenv.config();
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+const PORT = process.env.PORT || 3001;
 
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
+// ✅ Use model from .env or fallback to default
+const model = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
+
+app.use(cors());
+app.use(bodyParser.json());
 
 app.get('/', (req, res) => {
-  res.send('✅ HealthMate backend is running with Groq + Mixtral');
+  res.send('✅ HealthMate backend is running with Groq');
 });
 
 app.post('/chat', async (req, res) => {
-  const userMessage = req.body.message;
-
   try {
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${GROQ_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'mixtral-8x7b-32768',
+    const userMessage = req.body.message;
+    console.log('Received message from frontend:', userMessage);
+
+    const groqResponse = await axios.post(
+      'https://api.groq.com/openai/v1/chat/completions',
+      {
+        model,
         messages: [
           {
             role: 'system',
-            content: `You are a health-focused AI assistant named HealthMate. You only answer questions related to health, symptoms, medications, wellness, and emergencies. If asked about anything outside of health, politely decline and remind the user that you are strictly a health assistant.`,
+            content: 'You are a helpful and trustworthy health assistant. Only respond to health-related questions.',
           },
           {
             role: 'user',
@@ -39,29 +38,53 @@ app.post('/chat', async (req, res) => {
           },
         ],
         temperature: 0.7,
-      }),
-    });
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+        },
+      }
+    );
 
-    const data = await response.json();
+    const reply = groqResponse.data.choices?.[0]?.message?.content;
+    res.json({ reply: reply || '⚠️ No response received.' });
 
-    if (data.choices && data.choices[0]?.message?.content) {
-      res.json({ reply: data.choices[0].message.content });
-    } else {
-      console.error('Groq response error:', data);
-      res.status(500).json({ reply: '⚠️ Sorry, I couldn’t process that right now. Please try again later.' });
-    }
   } catch (error) {
-    console.error('Groq API error:', {
-      message: error.message,
-      stack: error.stack,
-      response: error.response?.data,
-      status: error.response?.status,
+    console.error('Groq error:', error.response?.data || error.message || error);
+    res.status(500).json({
+      reply: '⚠️ Sorry, something went wrong while processing your message. Please try again shortly.',
     });
-    res.status(500).json({ reply: '⚠️ Sorry, I couldn’t process that right now. Please try again later.' });
   }
 });
 
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+// ✅ Optional: test Groq on startup
+const testGroq = async () => {
+  try {
+    console.log('🔍 Running Groq test...');
+    const response = await axios.post(
+      'https://api.groq.com/openai/v1/chat/completions',
+      {
+        model,
+        messages: [
+          { role: 'user', content: 'I have a sore throat' },
+        ],
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+        },
+      }
+    );
+    console.log('✅ Groq test response:', response.data.choices?.[0]?.message?.content);
+  } catch (error) {
+    console.error('❌ Groq test error:', error.response?.data || error.message || error);
+  }
+};
+
+testGroq();
+
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ HealthMate backend running on port ${PORT}`);
 });

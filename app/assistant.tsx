@@ -1,174 +1,112 @@
-// assistant.tsx
-import { ThemedText } from '@/components/ThemedText';
-import { ThemedView } from '@/components/ThemedView';
-import { Ionicons } from '@expo/vector-icons';
-import { useColorScheme } from '@/hooks/useColorScheme';
-import { useEffect, useState } from 'react';
+// app/(tabs)/assistant.tsx
+import React, { useState } from 'react';
 import {
-  KeyboardAvoidingView,
-  Platform,
-  StyleSheet,
+  View,
+  Text,
   TextInput,
   TouchableOpacity,
-  View,
-  FlatList,
-  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
 } from 'react-native';
-import { supabase } from '../supabaseClient';
-
-type Message = {
-  id: string;
-  sender: 'user' | 'assistant';
-  text: string;
-};
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function AssistantScreen() {
-  const colorScheme = useColorScheme();
-  const [input, setInput] = useState('');
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [userName, setUserName] = useState('');
+  const [userInput, setUserInput] = useState('');
+  const [reply, setReply] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    const loadUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      const name = user?.user_metadata?.full_name ?? 'there';
-      setUserName(name);
+  // ✅ Hardcoded for Android emulator testing
+  const API_URL = 'https://undistractingly-unlocalisable-hadley.ngrok-free.dev';
 
-      setMessages([
-        {
-          id: 'welcome',
-          sender: 'assistant',
-          text: `🤖 Hello ${name}! I'm your AI health assistant. What symptoms are you experiencing today?`,
-        },
-      ]);
-    };
-    loadUser();
-  }, []);
+  const sendMessage = async () => {
+    if (!userInput.trim()) return;
+    setLoading(true);
+    setReply('');
 
-  const handleSend = async () => {
-    if (!input.trim()) return;
-
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      sender: 'user',
-      text: input.trim(),
-    };
-    setMessages((prev) => [...prev, userMessage]);
+    console.log('Using API URL:', API_URL);
 
     try {
-      const res = await fetch('http://localhost:3001/chat', {
+      const res = await fetch(`${API_URL}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: input.trim() }),
+        body: JSON.stringify({ message: userInput }),
       });
 
-      const data = await res.json();
+      const text = await res.text(); // 👈 get raw response
+      console.log('🧾 Raw response:', text);
 
-      const reply: Message = {
-        id: Date.now().toString() + '-bot',
-        sender: 'assistant',
-        text: data.reply,
-      };
-      setMessages((prev) => [...prev, reply]);
-    } catch (err) {
-      const errorReply: Message = {
-        id: Date.now().toString() + '-error',
-        sender: 'assistant',
-        text: '⚠️ Sorry, something went wrong while processing your message. Please try again shortly.',
-      };
-      setMessages((prev) => [...prev, errorReply]);
+      let data;
+      try {
+        data = JSON.parse(text); // 👈 try parsing manually
+      } catch (parseError) {
+        console.error('❌ JSON parse error:', parseError);
+        setReply('⚠️ Backend returned invalid response. Please check server logs.');
+        return;
+      }
+
+      console.log('✅ Parsed JSON:', data);
+      setReply(data.reply || '⚠️ No response received.');
+    } catch (error: any) {
+      console.error('❌ Frontend fetch error:', error.message || error);
+      setReply('⚠️ Sorry, something went wrong while processing your message.');
+    } finally {
+      setLoading(false);
     }
-
-    setInput('');
   };
 
-  const renderItem = ({ item }: { item: Message }) => (
-    <View
-      style={[
-        styles.messageBubble,
-        item.sender === 'user' ? styles.userBubble : styles.assistantBubble,
-      ]}
-    >
-      <ThemedText style={styles.messageText}>{item.text}</ThemedText>
-    </View>
-  );
-
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1 }}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
-      <ThemedView style={styles.container}>
-        <FlatList
-          data={messages}
-          renderItem={renderItem}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={styles.chatContainer}
-        />
+    <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={80}
+      >
+        <ScrollView
+          contentContainerStyle={{ padding: 20 }}
+          keyboardShouldPersistTaps="handled"
+        >
+          <Text style={{ fontSize: 18, marginBottom: 10 }}>
+            🤖 Hello! I'm your AI health assistant. What symptoms are you experiencing today?
+          </Text>
 
-        <View style={styles.inputRow}>
           <TextInput
-            style={styles.input}
-            placeholder="Describe your symptoms..."
-            value={input}
-            onChangeText={setInput}
+            style={{
+              borderWidth: 1,
+              borderColor: '#ccc',
+              borderRadius: 8,
+              padding: 12,
+              fontSize: 16,
+              marginBottom: 10,
+            }}
+            placeholder="Type your symptoms..."
+            value={userInput}
+            onChangeText={setUserInput}
+            multiline
           />
+
           <TouchableOpacity
-            style={styles.sendButton}
-            onPress={handleSend}
-            accessibilityLabel="Send message"
+            onPress={sendMessage}
+            style={{
+              backgroundColor: '#007AFF',
+              paddingVertical: 12,
+              borderRadius: 8,
+              alignItems: 'center',
+            }}
           >
-            <Ionicons name="send" size={20} color="white" />
+            <Text style={{ color: '#fff', fontSize: 16 }}>
+              {loading ? 'Thinking...' : 'Send'}
+            </Text>
           </TouchableOpacity>
-        </View>
-      </ThemedView>
-    </KeyboardAvoidingView>
+
+          {reply ? (
+            <View style={{ marginTop: 20 }}>
+              <Text style={{ fontSize: 16, fontWeight: 'bold' }}>HealthMate:</Text>
+              <Text style={{ fontSize: 16, marginTop: 8 }}>{reply}</Text>
+            </View>
+          ) : null}
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
-
-const styles = StyleSheet.create({
-  container: { flex: 1, paddingTop: 60, paddingHorizontal: 20 },
-  chatContainer: { paddingBottom: 100 },
-  messageBubble: {
-    padding: 12,
-    borderRadius: 12,
-    marginBottom: 10,
-    maxWidth: '80%',
-  },
-  assistantBubble: {
-    backgroundColor: '#F3F4F6',
-    alignSelf: 'flex-start',
-  },
-  userBubble: {
-    backgroundColor: '#10B981',
-    alignSelf: 'flex-end',
-  },
-  messageText: {
-    fontSize: 16,
-    color: '#111827',
-  },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderTopWidth: 1,
-    borderColor: '#E5E5EA',
-    backgroundColor: '#FFFFFF',
-  },
-  input: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: '#E5E5EA',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 16,
-    marginRight: 8,
-  },
-  sendButton: {
-    backgroundColor: '#10B981',
-    padding: 10,
-    borderRadius: 8,
-  },
-});
