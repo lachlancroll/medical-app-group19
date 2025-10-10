@@ -1,16 +1,25 @@
 // app/medications.tsx
 /* eslint-disable react-hooks/exhaustive-deps */
+
 import { ThemedText } from "@/components/ThemedText";
 import { ThemedView } from "@/components/ThemedView";
 import { Colors } from "@/constants/Colors";
 import { useColorScheme } from "@/hooks/useColorScheme";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { RealtimePostgresInsertPayload } from "@supabase/supabase-js";
 import { useRouter } from "expo-router";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Alert,
   FlatList,
   Modal,
+  Platform,
   StyleSheet,
   TextInput,
   TouchableOpacity,
@@ -41,7 +50,7 @@ type PrescribedItem = {
 
 type MedOption = {
   id: string;
-  label: string;     // "Panadol (Paracetamol) 500 mg tablet"
+  label: string; // "Panadol (Paracetamol) 500 mg tablet"
   sublabel?: string; // e.g., "ATC: N02BE01"
 };
 
@@ -56,35 +65,46 @@ async function ensurePatientProfile(uid: string) {
 async function ensureAppUserRow(uid: string) {
   const { data: u } = await supabase.auth.getUser();
   const email = u?.user?.email ?? null;
-  const { error } = await supabase.from("users").upsert({ id: uid, email }, { onConflict: "id" });
+  const { error } = await supabase
+    .from("users")
+    .upsert({ id: uid, email }, { onConflict: "id" });
   if (error) throw error;
 }
 
-// find a doctor linked to this patient via the join table (currently unused in add flow)
-async function getLinkedDoctorId(patientId: string): Promise<string> {
-  const { data, error } = await supabase
-    .from("doctor_patient")
-    .select("doctor_id")
-    .eq("patient_id", patientId)
-    .limit(1)
-    .maybeSingle();
-
-  if (error) throw error;
-  const doctorId = data?.doctor_id as string | undefined;
-  if (!doctorId) throw new Error("No linked doctor found for this patient.");
-  return doctorId;
+async function confirmRemove(title: string, message: string): Promise<boolean> {
+  if (Platform.OS === "web") {
+    return Promise.resolve(window.confirm(`${title}\n\n${message}`));
+  }
+  return new Promise((resolve) => {
+    Alert.alert(
+      title,
+      message,
+      [
+        { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+        { text: "Remove", style: "destructive", onPress: () => resolve(true) },
+      ],
+      { cancelable: true }
+    );
+  });
 }
-
+// ---------- Component ----------
 export default function MedicationsScreen() {
   const colorScheme = useColorScheme();
   const router = useRouter();
 
   const [loading, setLoading] = useState(true);
   const [items, setItems] = useState<PrescribedItem[]>([]);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+
+  // Track IDs to prevent duplicates when optimistic add + realtime both occur
+  const seenItemIdsRef = useRef<Set<string>>(new Set());
 
   // -------- Add modal state --------
   const [showAdd, setShowAdd] = useState(false);
   const [medId, setMedId] = useState("");
+  {
+    /* name kept as "sig" to match your existing UI/state */
+  }
   const [sig, setSig] = useState("");
 
   // -------- Medication dropdown/search state --------
@@ -93,6 +113,20 @@ export default function MedicationsScreen() {
   const [medLoading, setMedLoading] = useState(false);
   const [medOptions, setMedOptions] = useState<MedOption[]>([]);
   const [selectedMed, setSelectedMed] = useState<MedOption | null>(null);
+
+  // Load and cache current user ID early
+  useEffect(() => {
+    (async () => {
+      const { data: userData, error } = await supabase.auth.getUser();
+      if (error) {
+        console.error(error);
+        setCurrentUserId(null);
+        return;
+      }
+      const uid = userData.user?.id ?? null;
+      setCurrentUserId(uid);
+    })();
+  }, []);
 
   // -------- Load current user's prescriptions --------
   const fetchForCurrentUser = useCallback(async () => {
@@ -113,7 +147,8 @@ export default function MedicationsScreen() {
 
     const { data, error } = await supabase
       .from("prescriptions")
-      .select(`
+      .select(
+        `
         id,
         prescribed_at,
         start_date,
@@ -131,7 +166,8 @@ export default function MedicationsScreen() {
             strength_unit
           )
         )
-      `)
+      `
+      )
       .eq("patient_id", uid)
       .order("prescribed_at", { ascending: false });
 
@@ -142,19 +178,23 @@ export default function MedicationsScreen() {
       return;
     }
 
-    const flattened: PrescribedItem[] =
-      (data ?? []).flatMap((p: any) =>
-        (p.items ?? []).map((it: any) => ({
-          id: it.id,
-          sig_text: it.sig_text,
-          medication: it.medication ?? null,
-          prescription_id: p.id,
-          prescribed_at: p.prescribed_at,
-          start_date: p.start_date,
-          end_date: p.end_date,
-          status: p.status,
-        }))
-      );
+    const flattened: PrescribedItem[] = (data ?? []).flatMap((p: any) =>
+      (p.items ?? []).map((it: any) => ({
+        id: it.id,
+        sig_text: it.sig_text,
+        medication: it.medication ?? null,
+        prescription_id: p.id,
+        prescribed_at: p.prescribed_at,
+        start_date: p.start_date,
+        end_date: p.end_date,
+        status: p.status,
+      }))
+    );
+
+    // update seen ids
+    const s = new Set<string>();
+    flattened.forEach((i) => s.add(i.id));
+    seenItemIdsRef.current = s;
 
     setItems(flattened);
     setLoading(false);
@@ -163,6 +203,101 @@ export default function MedicationsScreen() {
   useEffect(() => {
     fetchForCurrentUser();
   }, []);
+
+  // -------- Realtime subscription --------
+  useEffect(() => {
+    if (!currentUserId) return;
+
+    const channel = supabase
+      .channel(`rx-items:${currentUserId}`)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "prescription_items" },
+        async (payload: RealtimePostgresInsertPayload<any>) => {
+          try {
+            const row = payload.new as {
+              id: string;
+              prescription_id: string;
+              medication_id: string;
+              sig_text: string | null;
+            };
+
+            if (seenItemIdsRef.current.has(row.id)) return;
+
+            const { data: rx, error: rxErr } = await supabase
+              .from("prescriptions")
+              .select(
+                "id, patient_id, prescribed_at, start_date, end_date, status"
+              )
+              .eq("id", row.prescription_id)
+              .maybeSingle();
+
+            if (rxErr || !rx) return;
+            if (rx.patient_id !== currentUserId) return;
+
+            const { data: medRow, error: medErr } = await supabase
+              .from("medications")
+              .select(
+                "id, generic_name, brand_name, form, strength_value, strength_unit"
+              )
+              .eq("id", row.medication_id)
+              .maybeSingle();
+
+            if (medErr) {
+              console.error(medErr);
+              return;
+            }
+
+            const newItem: PrescribedItem = {
+              id: row.id,
+              sig_text: row.sig_text,
+              medication: (medRow ?? null) as Medication | null,
+              prescription_id: row.prescription_id,
+              prescribed_at: rx.prescribed_at ?? new Date().toISOString(),
+              start_date: rx.start_date,
+              end_date: rx.end_date,
+              status: rx.status ?? "active",
+            };
+
+            setItems((prev) => {
+              if (prev.some((p) => p.id === row.id)) return prev;
+              const next = [newItem, ...prev];
+              seenItemIdsRef.current.add(row.id);
+              return next;
+            });
+          } catch (e) {
+            console.error("Realtime INSERT handler error:", e);
+          }
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "prescription_items" },
+        async (payload) => {
+          const row = payload.new as { id: string; sig_text: string | null };
+          setItems((prev) =>
+            prev.map((p) =>
+              p.id === row.id ? { ...p, sig_text: row.sig_text } : p
+            )
+          );
+          seenItemIdsRef.current.add(row.id);
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "DELETE", schema: "public", table: "prescription_items" },
+        async (payload) => {
+          const row = payload.old as { id: string };
+          setItems((prev) => prev.filter((p) => p.id !== row.id));
+          seenItemIdsRef.current.delete(row.id);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentUserId]);
 
   // -------- Optional grouping --------
   const { activeItems, otherItems } = useMemo(() => {
@@ -173,6 +308,71 @@ export default function MedicationsScreen() {
 
   const formatDate = (iso: string | null) =>
     iso ? new Date(iso).toLocaleDateString() : "—";
+
+  // -------- Remove (delete) a prescription item (+ delete parent if now empty) --------
+  const handleRemoveItem = useCallback(async (item: PrescribedItem) => {
+    const ok = await confirmRemove(
+      "Remove medication",
+      "This will remove this medication from your prescriptions. Continue?"
+    );
+    if (!ok) return;
+
+    try {
+      // Optimistic UI
+      setItems((prev) => prev.filter((p) => p.id !== item.id));
+      seenItemIdsRef.current.delete(item.id);
+
+      // Get the parent prescription id BEFORE delete (avoids RETURNING + RLS issues)
+      const { data: pre, error: preErr } = await supabase
+        .from("prescription_items")
+        .select("prescription_id")
+        .eq("id", item.id)
+        .maybeSingle();
+      if (preErr) throw preErr;
+      const prescId = pre?.prescription_id;
+
+      // Delete the item
+      const { error: delErr } = await supabase
+        .from("prescription_items")
+        .delete()
+        .eq("id", item.id);
+      if (delErr) throw delErr;
+
+      // If we know the parent, check if it’s empty now
+      if (prescId) {
+        const { count, error: countErr } = await supabase
+          .from("prescription_items")
+          .select("id", { count: "exact", head: true })
+          .eq("prescription_id", prescId);
+        if (countErr) {
+          console.error("Count error:", countErr);
+          return;
+        }
+        if ((count ?? 0) === 0) {
+          // Delete empty prescription (requires DELETE policy)
+          const { error: prescDelErr } = await supabase
+            .from("prescriptions")
+            .delete()
+            .eq("id", prescId);
+          if (prescDelErr) {
+            console.warn(
+              "Could not delete empty prescription:",
+              prescDelErr.message
+            );
+          }
+        }
+      }
+    } catch (e: any) {
+      console.error("Remove failed:", e?.message ?? e);
+      // Rollback optimistic UI
+      setItems((prev) => [item, ...prev]);
+      seenItemIdsRef.current.add(item.id);
+      Alert.alert(
+        "Remove failed",
+        e?.message ?? "Could not remove medication."
+      );
+    }
+  }, []);
 
   const renderItem = ({ item }: { item: PrescribedItem }) => {
     const name =
@@ -200,13 +400,27 @@ export default function MedicationsScreen() {
             )}
           </View>
 
-          <View
-            style={[
-              styles.statusPill,
-              { backgroundColor: item.status === "active" ? "#34C759" : "#CBD5E1" },
-            ]}
-          >
-            <ThemedText style={styles.statusText}>{item.status}</ThemedText>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <View
+              style={[
+                styles.statusPill,
+                {
+                  backgroundColor:
+                    item.status === "active" ? "#34C759" : "#CBD5E1",
+                },
+              ]}
+            >
+              <ThemedText style={styles.statusText}>{item.status}</ThemedText>
+            </View>
+
+            {/* Remove button */}
+            <TouchableOpacity
+              accessibilityLabel="Remove medication"
+              onPress={() => handleRemoveItem(item)}
+              style={styles.trashBtn}
+            >
+              <Ionicons name="trash" size={16} color="white" />
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -237,51 +451,54 @@ export default function MedicationsScreen() {
   };
 
   // -------- Medication search (server-side) --------
-  const fetchMedications = useCallback(
-    async (q: string) => {
-      setMedLoading(true);
+  const fetchMedications = useCallback(async (q: string) => {
+    setMedLoading(true);
 
-      const orFilter = q?.trim()
-        ? `generic_name.ilike.%${q.trim()}%,brand_name.ilike.%${q.trim()}%`
-        : undefined;
+    const orFilter = q?.trim()
+      ? `generic_name.ilike.%${q.trim()}%,brand_name.ilike.%${q.trim()}%`
+      : undefined;
 
-      let query = supabase
-        .from("medications")
-        .select("id, generic_name, brand_name, form, strength_value, strength_unit, atc_code")
-        .order("generic_name", { ascending: true })
-        .limit(50);
+    let query = supabase
+      .from("medications")
+      .select(
+        "id, generic_name, brand_name, form, strength_value, strength_unit, atc_code"
+      )
+      .order("generic_name", { ascending: true })
+      .limit(50);
 
-      if (orFilter) query = query.or(orFilter);
+    if (orFilter) query = query.or(orFilter);
 
-      const { data, error } = await query;
-      setMedLoading(false);
+    const { data, error } = await query;
+    setMedLoading(false);
 
-      if (error) {
-        console.error(error);
-        Alert.alert("Error", "Couldn't load medications.");
-        setMedOptions([]);
-        return;
-      }
+    if (error) {
+      console.error(error);
+      Alert.alert("Error", "Couldn't load medications.");
+      setMedOptions([]);
+      return;
+    }
 
-      const opts: MedOption[] = (data ?? []).map((m: any) => {
-        const main =
-          (m.brand_name ? `${m.brand_name} (${m.generic_name})` : m.generic_name) ?? "Medication";
+    const opts: MedOption[] = (data ?? []).map((m: any) => {
+      const main =
+        (m.brand_name
+          ? `${m.brand_name} (${m.generic_name})`
+          : m.generic_name) ?? "Medication";
 
-        const dose = [m.strength_value, m.strength_unit].filter(Boolean).join(" ");
-        const form = m.form ? ` ${m.form}` : "";
-        const label = [main, dose || "", form].join("").trim();
+      const dose = [m.strength_value, m.strength_unit]
+        .filter(Boolean)
+        .join(" ");
+      const form = m.form ? ` ${m.form}` : "";
+      const label = [main, dose || "", form].join("").trim();
 
-        return {
-          id: m.id,
-          label: label || main,
-          sublabel: m.atc_code ? `ATC: ${m.atc_code}` : undefined,
-        };
-      });
+      return {
+        id: m.id,
+        label: label || main,
+        sublabel: m.atc_code ? `ATC: ${m.atc_code}` : undefined,
+      };
+    });
 
-      setMedOptions(opts);
-    },
-    []
-  );
+    setMedOptions(opts);
+  }, []);
 
   // Debounce search while modal open
   useEffect(() => {
@@ -295,11 +512,14 @@ export default function MedicationsScreen() {
     if (showAdd) fetchMedications("");
   }, [showAdd, fetchMedications]);
 
-  // -------- Add medication flow --------
+  // -------- Add medication flow (optimistic prepend) --------
   const handleAddMedication = async () => {
     try {
       if (!medId.trim()) {
-        Alert.alert("Select a medication", "Please choose a medication from the list.");
+        Alert.alert(
+          "Select a medication",
+          "Please choose a medication from the list."
+        );
         return;
       }
       if (!sig.trim()) {
@@ -314,14 +534,16 @@ export default function MedicationsScreen() {
       await ensurePatientProfile(uid);
       await ensureAppUserRow(uid);
 
+      // Create prescription and return metadata we need to render immediately
       const { data: rx, error: rxErr } = await supabase
         .from("prescriptions")
         .insert([{ patient_id: uid, created_by: uid }])
-        .select("id")
+        .select("id, prescribed_at, start_date, end_date, status")
         .single();
       if (rxErr) throw rxErr;
 
-      const { error: itemErr } = await supabase
+      // Insert the item and return its id + sig_text
+      const { data: itemRow, error: itemErr } = await supabase
         .from("prescription_items")
         .insert([
           {
@@ -329,14 +551,46 @@ export default function MedicationsScreen() {
             medication_id: medId.trim(),
             sig_text: sig.trim(),
           },
-        ]);
+        ])
+        .select("id, sig_text")
+        .single();
       if (itemErr) throw itemErr;
 
+      // Fetch the medication row to render details
+      const { data: medRow, error: medErr } = await supabase
+        .from("medications")
+        .select(
+          "id, generic_name, brand_name, form, strength_value, strength_unit"
+        )
+        .eq("id", medId.trim())
+        .single();
+      if (medErr) throw medErr;
+
+      // Build the prescribed item and prepend to list (optimistic UI)
+      const newItem: PrescribedItem = {
+        id: itemRow.id,
+        sig_text: itemRow.sig_text,
+        medication: medRow as Medication,
+        prescription_id: rx.id,
+        prescribed_at: rx.prescribed_at ?? new Date().toISOString(),
+        start_date: rx.start_date,
+        end_date: rx.end_date,
+        status: rx.status ?? "active",
+      };
+
+      setItems((prev) => {
+        if (prev.some((p) => p.id === newItem.id)) return prev;
+        const next = [newItem, ...prev];
+        seenItemIdsRef.current.add(newItem.id);
+        return next;
+      });
+
+      // Reset UI
       setShowAdd(false);
       setMedId("");
       setSelectedMed(null);
       setSig("");
-      await fetchForCurrentUser();
+
       Alert.alert("Added", "Medication added to your prescriptions.");
     } catch (e: any) {
       Alert.alert("Error", e?.message ?? "Could not add medication.");
@@ -371,7 +625,10 @@ export default function MedicationsScreen() {
           <TouchableOpacity
             onPress={fetchForCurrentUser}
             accessibilityLabel="Refresh"
-            style={[styles.iconBtn, { backgroundColor: Colors[colorScheme ?? "light"].tint }]}
+            style={[
+              styles.iconBtn,
+              { backgroundColor: Colors[colorScheme ?? "light"].tint },
+            ]}
           >
             <Ionicons name="refresh" size={20} color="white" />
           </TouchableOpacity>
@@ -389,7 +646,9 @@ export default function MedicationsScreen() {
           ListEmptyComponent={
             <View style={styles.emptyState}>
               <MaterialCommunityIcons name="pill" size={48} color="#8E8E93" />
-              <ThemedText style={styles.emptyText}>No prescriptions found</ThemedText>
+              <ThemedText style={styles.emptyText}>
+                No prescriptions found
+              </ThemedText>
               <ThemedText style={styles.emptySubtext}>
                 Prescriptions will appear here after your clinician adds them.
               </ThemedText>
@@ -399,7 +658,11 @@ export default function MedicationsScreen() {
       )}
 
       {/* Add Medication Modal */}
-      <Modal visible={showAdd} animationType="slide" presentationStyle="pageSheet">
+      <Modal
+        visible={showAdd}
+        animationType="slide"
+        presentationStyle="pageSheet"
+      >
         <ThemedView style={{ flex: 1, paddingTop: 60 }}>
           <View style={styles.modalHeader}>
             <ThemedText type="title">Add Medication</ThemedText>
@@ -417,14 +680,26 @@ export default function MedicationsScreen() {
                 onPress={() => setPickerOpen((v) => !v)}
                 style={[
                   styles.input,
-                  { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+                  {
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                  },
                 ]}
                 accessibilityLabel="Open medication dropdown"
               >
-                <ThemedText style={{ color: selectedMed ? "#111827" : "#6B7280" }}>
-                  {selectedMed ? selectedMed.label : "Search & select a medication"}
+                <ThemedText
+                  style={{ color: selectedMed ? "#111827" : "#6B7280" }}
+                >
+                  {selectedMed
+                    ? selectedMed.label
+                    : "Search & select a medication"}
                 </ThemedText>
-                <Ionicons name={pickerOpen ? "chevron-up" : "chevron-down"} size={18} color="#6B7280" />
+                <Ionicons
+                  name={pickerOpen ? "chevron-up" : "chevron-down"}
+                  size={18}
+                  color="#6B7280"
+                />
               </TouchableOpacity>
 
               {pickerOpen && (
@@ -449,7 +724,13 @@ export default function MedicationsScreen() {
 
                   <View style={{ height: 220 }}>
                     {medLoading ? (
-                      <View style={{ alignItems: "center", justifyContent: "center", height: 220 }}>
+                      <View
+                        style={{
+                          alignItems: "center",
+                          justifyContent: "center",
+                          height: 220,
+                        }}
+                      >
                         <ThemedText>Loading…</ThemedText>
                       </View>
                     ) : (
@@ -458,7 +739,9 @@ export default function MedicationsScreen() {
                         keyExtractor={(o) => o.id}
                         keyboardShouldPersistTaps="handled"
                         ItemSeparatorComponent={() => (
-                          <View style={{ height: 1, backgroundColor: "#F1F5F9" }} />
+                          <View
+                            style={{ height: 1, backgroundColor: "#F1F5F9" }}
+                          />
                         )}
                         renderItem={({ item }) => (
                           <TouchableOpacity
@@ -467,13 +750,24 @@ export default function MedicationsScreen() {
                               setMedId(item.id); // feeds existing add flow
                               setPickerOpen(false);
                             }}
-                            style={{ paddingHorizontal: 12, paddingVertical: 12 }}
+                            style={{
+                              paddingHorizontal: 12,
+                              paddingVertical: 12,
+                            }}
                           >
-                            <ThemedText style={{ fontSize: 16, fontWeight: "600" }}>
+                            <ThemedText
+                              style={{ fontSize: 16, fontWeight: "600" }}
+                            >
                               {item.label}
                             </ThemedText>
                             {!!item.sublabel && (
-                              <ThemedText style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>
+                              <ThemedText
+                                style={{
+                                  fontSize: 12,
+                                  color: "#6B7280",
+                                  marginTop: 2,
+                                }}
+                              >
                                 {item.sublabel}
                               </ThemedText>
                             )}
@@ -495,7 +789,9 @@ export default function MedicationsScreen() {
 
             {/* SIG / Directions */}
             <View>
-              <ThemedText style={styles.inputLabel}>SIG / Directions</ThemedText>
+              <ThemedText style={styles.inputLabel}>
+                SIG / Directions
+              </ThemedText>
               <TextInput
                 value={sig}
                 onChangeText={setSig}
@@ -507,9 +803,16 @@ export default function MedicationsScreen() {
           </View>
 
           <View style={styles.modalFooter}>
-            <TouchableOpacity style={styles.cancelButton} onPress={() => setShowAdd(false)}>
+            <TouchableOpacity
+              style={styles.cancelButton}
+              onPress={() => setShowAdd(false)}
+            >
               <View style={styles.btnContent}>
-                <Ionicons name="close-circle-outline" size={18} color="#6B7280" />
+                <Ionicons
+                  name="close-circle-outline"
+                  size={18}
+                  color="#6B7280"
+                />
                 <ThemedText style={styles.cancelButtonText}>Cancel</ThemedText>
               </View>
             </TouchableOpacity>
@@ -568,16 +871,48 @@ const styles = StyleSheet.create({
   medicationDosage: { fontSize: 14, color: "#8E8E93" },
 
   statusPill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },
-  statusText: { color: "white", fontSize: 12, fontWeight: "700", textTransform: "capitalize" },
+  statusText: {
+    color: "white",
+    fontSize: 12,
+    fontWeight: "700",
+    textTransform: "capitalize",
+  },
 
-  sigText: { fontSize: 14, color: "#4B5563", fontStyle: "italic", marginBottom: 12 },
+  trashBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#EF4444", // red-500
+  },
 
-  rxMetaRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 4 },
+  sigText: {
+    fontSize: 14,
+    color: "#4B5563",
+    fontStyle: "italic",
+    marginBottom: 12,
+  },
+
+  rxMetaRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 4,
+  },
   rxMetaLabel: { fontSize: 12, color: "#64748B" },
   rxMetaValue: { fontSize: 12, fontWeight: "600" },
 
-  emptyState: { alignItems: "center", justifyContent: "center", paddingVertical: 60 },
-  emptyText: { fontSize: 18, fontWeight: "600", marginTop: 16, marginBottom: 8 },
+  emptyState: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 60,
+  },
+  emptyText: {
+    fontSize: 18,
+    fontWeight: "600",
+    marginTop: 16,
+    marginBottom: 8,
+  },
   emptySubtext: { fontSize: 14, color: "#8E8E93", textAlign: "center" },
 
   // Modal styles
@@ -607,7 +942,12 @@ const styles = StyleSheet.create({
     borderTopColor: "#E5E5EA",
     gap: 12,
   },
-  btnContent: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6 },
+  btnContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
   cancelButton: {
     flex: 1,
     paddingVertical: 12,
@@ -617,6 +957,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   cancelButtonText: { fontSize: 16, fontWeight: "600", color: "#111827" },
-  saveButton: { flex: 1, paddingVertical: 12, borderRadius: 8, alignItems: "center" },
+  saveButton: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: "center",
+  },
   saveButtonText: { color: "white", fontSize: 16, fontWeight: "600" },
 });
