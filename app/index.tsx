@@ -86,7 +86,7 @@ function DoctorHome({ user, router }: { user: any, router: any }) {
         <LargeActionButton
           label="Patients List"
           icon={<MaterialCommunityIcons name="account-group-outline" size={30} />}
-          onPress={() => router.push('/patients')}
+          onPress={() => router.push('/appointments')}
         />
         <LargeActionButton
           label="Appointments"

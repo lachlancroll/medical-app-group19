@@ -63,7 +63,7 @@ type Medication = {
             .filter((id): id is string => Boolean(id));
 
           // Step 3: Fetch profiles for all patient user_ids
-          let profilesMap = {};
+          let profilesMap: { [key: string]: string } = {};
           if (patientUserIds.length > 0) {
             const { data: profilesData, error: profilesError } = await supabase
               .from('profiles')
@@ -73,7 +73,7 @@ type Medication = {
               console.error(profilesError);
             } else {
               profilesMap = Object.fromEntries(
-                profilesData.map(profile => [profile.user_id, profile.full_name])
+                profilesData.map((profile: { user_id: string; full_name: string }) => [profile.user_id, profile.full_name])
               );
             }
           }
@@ -118,23 +118,32 @@ type Medication = {
           </Pressable>
         </View>
         <FlatList
-          data={appointments}
-          keyExtractor={item => item.id}
-          contentContainerStyle={appointments.length === 0 ? styles.emptyContainer : undefined}
-          ListEmptyComponent={<Text style={styles.emptyText}>No appointments scheduled.</Text>}
-          renderItem={({ item }) => (
-            <View style={styles.card}>
-              <View style={styles.cardRow}>
-                <MaterialCommunityIcons name="account" size={28} color="#0EA5E9" />
-                <View style={{ marginLeft: 12 }}>
-                  <Text style={styles.patientName}>{item.patient?.profile?.full_name || 'Unknown Patient'}</Text>
-                  <Text style={styles.timeText}>{formatTime(item.starts_at)} - {formatTime(item.ends_at)}</Text>
-                  <Text style={styles.statusText}>{capitalize(item.status)}</Text>
-                </View>
-              </View>
-            </View>
-          )}
-        />
+  data={appointments}
+  keyExtractor={item => item.id}
+  contentContainerStyle={appointments.length === 0 ? styles.emptyContainer : undefined}
+  ListEmptyComponent={<Text style={styles.emptyText}>No appointments scheduled.</Text>}
+  renderItem={({ item }) => (
+    <Pressable
+      style={styles.card}
+      onPress={() => router.push(`/appointments/${item.id}`)} // ✅ Navigate to details page
+      android_ripple={{ color: '#E2E8F0' }}
+    >
+      <View style={styles.cardRow}>
+        <MaterialCommunityIcons name="account" size={28} color="#0EA5E9" />
+        <View style={{ marginLeft: 12 }}>
+          <Text style={styles.patientName}>
+            {item.patient_name || 'Unknown Patient'}
+          </Text>
+          <Text style={styles.timeText}>
+            {formatTime(item.starts_at)} - {formatTime(item.ends_at)}
+          </Text>
+          <Text style={styles.statusText}>{capitalize(item.status)}</Text>
+        </View>
+      </View>
+    </Pressable>
+  )}
+/>
+
       </SafeAreaView>
     );
   }
