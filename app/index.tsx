@@ -79,6 +79,32 @@ function PatientHome({ user, router }: { user: any, router: any }) {
 }
 
 function DoctorHome({ user, router }: { user: any, router: any }) {
+  const [appointments, setAppointments] = useState<{ starts_at: string }[]>([]);
+  const [loadingAppointments, setLoadingAppointments] = useState(true);
+
+  useEffect(() => {
+    const fetchAppointments = async () => {
+      setLoadingAppointments(true);
+      const { data, error } = await supabase
+        .from('appointments')
+        .select('starts_at')
+        .eq('doctor_id', user.id);
+      if (error) {
+        console.error('Error fetching appointments:', error);
+        setAppointments([]);
+      } else {
+        setAppointments(data || []);
+      }
+      setLoadingAppointments(false);
+    };
+    fetchAppointments();
+  }, [user.id]);
+
+  // Extract appointment dates as strings (YYYY-MM-DD)
+  const appointmentDates = useMemo(() =>
+    appointments.map(a => a.starts_at.slice(0, 10)), [appointments]
+  );
+
   return (
     <SafeAreaView style={styles.container}>
       <Header router={router} />
@@ -95,7 +121,16 @@ function DoctorHome({ user, router }: { user: any, router: any }) {
         />
       </View>
       <View style={styles.calendarCard}>
-        <SimpleCalendar />
+        {loadingAppointments ? (
+          <ActivityIndicator />
+        ) : (
+          <SimpleCalendar
+            highlightDates={appointmentDates}
+            onDatePress={(dateStr: string) => {
+              router.push(`/appointments?from=${dateStr}&to=${dateStr}`);
+            }}
+          />
+        )}
       </View>
     </SafeAreaView>
   );
@@ -145,7 +180,7 @@ function LargeActionButton({
   );
 }
 
-function SimpleCalendar() {
+function SimpleCalendar({ highlightDates = [], onDatePress }: { highlightDates?: string[], onDatePress?: (dateStr: string) => void }) {
   const today = new Date();
   const year = today.getFullYear();
   const month = today.getMonth(); // 0-indexed
@@ -185,6 +220,10 @@ function SimpleCalendar() {
     month === today.getMonth() &&
     year === today.getFullYear();
 
+  // Highlight logic: check if this day is in highlightDates
+  const getDateStr = (d: number) => `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  const isHighlighted = (d: number) => highlightDates.includes(getDateStr(d));
+
   const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
   // Chunk into exact 7-column rows to avoid percentage rounding issues
@@ -208,21 +247,41 @@ function SimpleCalendar() {
       <View>
         {weeks.map((week, wi) => (
           <View key={wi} style={styles.weekRow}>
-            {week.map((c, ci) => (
-              <View key={ci} style={styles.cellFixed} accessible>
-                {c.type === "curr" ? (
-                  isToday(c.day) ? (
-                    <View style={styles.todayPill}>
-                      <Text style={styles.todayText}>{c.day}</Text>
-                    </View>
-                  ) : (
-                    <Text style={styles.dayText}>{c.day}</Text>
-                  )
-                ) : (
-                  <Text style={styles.dayFaded}>{c.day}</Text>
-                )}
-              </View>
-            ))}
+            {week.map((c, ci) => {
+              if (c.type === "curr") {
+                const dateStr = getDateStr(c.day);
+                const isTodayCell = isToday(c.day);
+                const isHighlightedCell = isHighlighted(c.day);
+                return (
+                  <Pressable
+                    key={ci}
+                    style={styles.cellFixed}
+                    accessible
+                    accessibilityRole="button"
+                    accessibilityLabel={`Select date ${dateStr}`}
+                    onPress={onDatePress ? () => onDatePress(dateStr) : undefined}
+                  >
+                    {isTodayCell ? (
+                      <View style={styles.todayPill}>
+                        <Text style={styles.todayText}>{c.day}</Text>
+                      </View>
+                    ) : isHighlightedCell ? (
+                      <View style={styles.highlightPill}>
+                        <Text style={styles.highlightText}>{c.day}</Text>
+                      </View>
+                    ) : (
+                      <Text style={styles.dayText}>{c.day}</Text>
+                    )}
+                  </Pressable>
+                );
+              } else {
+                return (
+                  <View key={ci} style={styles.cellFixed} accessible>
+                    <Text style={styles.dayFaded}>{c.day}</Text>
+                  </View>
+                );
+              }
+            })}
           </View>
         ))}
       </View>
@@ -356,6 +415,20 @@ const styles = StyleSheet.create({
   },
   todayText: {
     color: "#FFFFFF",
+    fontWeight: "800",
+    fontSize: 16,
+  },
+  highlightPill: {
+    minWidth: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FACC15",
+    paddingHorizontal: 8,
+  },
+  highlightText: {
+    color: "#1E293B",
     fontWeight: "800",
     fontSize: 16,
   },
