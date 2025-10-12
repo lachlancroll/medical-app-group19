@@ -91,7 +91,7 @@ function DoctorHome({ user, router }: { user: any, router: any }) {
         <LargeActionButton
           label="Appointments"
           icon={<Ionicons name="calendar" size={30} />}
-          onPress={() => router.push('/doctor-appointments')}
+          onPress={() => router.push('/appointments')}
         />
       </View>
       <View style={styles.calendarCard}>

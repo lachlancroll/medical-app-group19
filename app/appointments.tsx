@@ -1,7 +1,7 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, SafeAreaView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { supabase } from '../supabaseClient';
 
 
@@ -27,18 +27,44 @@ type Medication = {
   user_id: string;
 };
   export default function DoctorAppointments() {
-    const router = useRouter();
-    const [appointments, setAppointments] = useState<any[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [user, setUser] = useState<any>(null);
+  const router = useRouter();
+  const [appointments, setAppointments] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState<any>(null);
+  // Date filter states
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
 
+  // Helper to update URL search params
+  function updateUrlParams(from: string, to: string) {
+    const params = new URLSearchParams(window.location.search);
+    if (from) params.set('from', from); else params.delete('from');
+    if (to) params.set('to', to); else params.delete('to');
+    const newUrl = `${window.location.pathname}?${params.toString()}`;
+    window.history.replaceState({}, '', newUrl);
+  }
+
+    // Parse URL search params for from/to, set defaults
+    useEffect(() => {
+      const params = new URLSearchParams(window.location.search);
+      let from = params.get('from');
+      let to = params.get('to');
+      const today = new Date();
+      const oneMonth = new Date(today);
+      oneMonth.setMonth(today.getMonth() + 1);
+      if (!from) from = today.toISOString().slice(0, 10);
+      if (!to) to = oneMonth.toISOString().slice(0, 10);
+      setFromDate(from);
+      setToDate(to);
+    }, []);
+
+    // Fetch appointments with date filtering in Supabase query
     useEffect(() => {
       (async () => {
         const { data: { user } } = await supabase.auth.getUser();
         setUser(user);
         if (user) {
-          // Step 1: Fetch appointments for this doctor, including patient_profiles
-          const { data: appointmentsData, error: appointmentsError } = await supabase
+          let query = supabase
             .from('appointments')
             .select(`
               id,
@@ -51,18 +77,24 @@ type Medication = {
             `)
             .eq('doctor_id', user.id)
             .order('starts_at', { ascending: true });
+          if (fromDate) query = query.gte('starts_at', fromDate);
+          if (toDate) {
+            // If toDate is in YYYY-MM-DD format, append 23:59:59 for full day coverage
+            let toDateTime = toDate;
+            if (/^\d{4}-\d{2}-\d{2}$/.test(toDate)) {
+              toDateTime = `${toDate}T23:59:59`;
+            }
+            query = query.lte('starts_at', toDateTime);
+          }
+          const { data: appointmentsData, error: appointmentsError } = await query;
           if (appointmentsError) {
             console.error(appointmentsError);
             setLoading(false);
             return;
           }
-
-          // Step 2: Get all patient user_ids from appointments
           const patientUserIds = appointmentsData
             .map(a => Array.isArray(a.patient) && a.patient.length > 0 ? a.patient[0].user_id : null)
             .filter((id): id is string => Boolean(id));
-
-          // Step 3: Fetch profiles for all patient user_ids
           let profilesMap: { [key: string]: string } = {};
           if (patientUserIds.length > 0) {
             const { data: profilesData, error: profilesError } = await supabase
@@ -77,8 +109,6 @@ type Medication = {
               );
             }
           }
-
-          // Step 4: Merge full_name into appointments
           const mergedAppointments = appointmentsData.map(a => {
             let patientId = Array.isArray(a.patient) && a.patient.length > 0 ? a.patient[0].user_id : undefined;
             return {
@@ -90,7 +120,7 @@ type Medication = {
         }
         setLoading(false);
       })();
-    }, []);
+    }, [fromDate, toDate]);
 
     if (loading) {
       return (
@@ -99,6 +129,9 @@ type Medication = {
         </SafeAreaView>
       );
     }
+
+    // No JS-side date filtering needed; appointments already filtered by Supabase
+    const filteredAppointments = appointments;
 
     return (
       <SafeAreaView style={styles.container}>
@@ -117,33 +150,59 @@ type Medication = {
             <Text style={styles.profileText}>Profile</Text>
           </Pressable>
         </View>
-        <FlatList
-  data={appointments}
-  keyExtractor={item => item.id}
-  contentContainerStyle={appointments.length === 0 ? styles.emptyContainer : undefined}
-  ListEmptyComponent={<Text style={styles.emptyText}>No appointments scheduled.</Text>}
-  renderItem={({ item }) => (
-    <Pressable
-      style={styles.card}
-      onPress={() => router.push(`/appointments/${item.id}`)} // ✅ Navigate to details page
-      android_ripple={{ color: '#E2E8F0' }}
-    >
-      <View style={styles.cardRow}>
-        <MaterialCommunityIcons name="account" size={28} color="#0EA5E9" />
-        <View style={{ marginLeft: 12 }}>
-          <Text style={styles.patientName}>
-            {item.patient_name || 'Unknown Patient'}
-          </Text>
-          <Text style={styles.timeText}>
-            {formatTime(item.starts_at)} - {formatTime(item.ends_at)}
-          </Text>
-          <Text style={styles.statusText}>{capitalize(item.status)}</Text>
+        {/* Date Filter Inputs */}
+        <View style={styles.filterRow}>
+          <Text style={styles.filterLabel}>From (YYYY-MM-DD):</Text>
+          <TextInput
+            style={styles.filterInput}
+            value={fromDate}
+            onChangeText={val => {
+              setFromDate(val);
+              updateUrlParams(val, toDate);
+            }}
+            placeholder="e.g. 2025-10-12"
+            keyboardType="numeric"
+            maxLength={10}
+          />
+          <Text style={[styles.filterLabel, { marginLeft: 12 }]}>To (YYYY-MM-DD):</Text>
+          <TextInput
+            style={styles.filterInput}
+            value={toDate}
+            onChangeText={val => {
+              setToDate(val);
+              updateUrlParams(fromDate, val);
+            }}
+            placeholder="e.g. 2025-11-12"
+            keyboardType="numeric"
+            maxLength={10}
+          />
         </View>
-      </View>
-    </Pressable>
-  )}
-/>
-
+        <FlatList
+          data={filteredAppointments}
+          keyExtractor={item => item.id}
+          contentContainerStyle={filteredAppointments.length === 0 ? styles.emptyContainer : undefined}
+          ListEmptyComponent={<Text style={styles.emptyText}>No appointments scheduled.</Text>}
+          renderItem={({ item }) => (
+            <Pressable
+              style={styles.card}
+              onPress={() => router.push(`/appointments/${item.id}`)} // ✅ Navigate to details page
+              android_ripple={{ color: '#E2E8F0' }}
+            >
+              <View style={styles.cardRow}>
+                <MaterialCommunityIcons name="account" size={28} color="#0EA5E9" />
+                <View style={{ marginLeft: 12 }}>
+                  <Text style={styles.patientName}>
+                    {item.patient_name || 'Unknown Patient'}
+                  </Text>
+                  <Text style={styles.timeText}>
+                    {formatTime(item.starts_at)} - {formatTime(item.ends_at)}
+                  </Text>
+                  <Text style={styles.statusText}>{capitalize(item.status)}</Text>
+                </View>
+              </View>
+            </Pressable>
+          )}
+        />
       </SafeAreaView>
     );
   }
@@ -202,4 +261,25 @@ type Medication = {
     statusText: { fontSize: 14, color: '#64748B', fontWeight: '600' },
     emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
     emptyText: { fontSize: 16, color: '#64748B', textAlign: 'center', marginTop: 40 },
+    filterRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginBottom: 12,
+    },
+    filterLabel: {
+      fontSize: 15,
+      marginRight: 8,
+      color: '#0EA5E9',
+      fontWeight: '600',
+    },
+    filterInput: {
+      borderWidth: 1,
+      borderColor: '#E2E8F0',
+      borderRadius: 8,
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+      fontSize: 15,
+      minWidth: 120,
+      backgroundColor: '#F8FAFC',
+    },
   });
