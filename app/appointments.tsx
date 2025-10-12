@@ -64,59 +64,48 @@ type Medication = {
         const { data: { user } } = await supabase.auth.getUser();
         setUser(user);
         if (user) {
-          let query = supabase
-            .from('appointments')
-            .select(`
-              id,
-              starts_at,
-              ends_at,
-              status,
-              patient:patient_profiles!patient_id (
-                user_id
-              )
-            `)
-            .eq('doctor_id', user.id)
-            .order('starts_at', { ascending: true });
-          if (fromDate) query = query.gte('starts_at', fromDate);
-          if (toDate) {
-            // If toDate is in YYYY-MM-DD format, append 23:59:59 for full day coverage
-            let toDateTime = toDate;
-            if (/^\d{4}-\d{2}-\d{2}$/.test(toDate)) {
-              toDateTime = `${toDate}T23:59:59`;
+            let query = supabase
+              .from('appointments')
+              .select(`
+                id,
+                starts_at,
+                ends_at,
+                status,
+                patient:patient_profiles!patient_id (
+                  user_id,
+                  profile:profiles!user_id (
+                    full_name
+                  )
+                )
+              `)
+              .eq('doctor_id', user.id)
+              .order('starts_at', { ascending: true });
+            if (fromDate) query = query.gte('starts_at', fromDate);
+            if (toDate) {
+              let toDateTime = toDate;
+              if (/^\d{4}-\d{2}-\d{2}$/.test(toDate)) {
+                toDateTime = `${toDate}T23:59:59`;
+              }
+              query = query.lte('starts_at', toDateTime);
             }
-            query = query.lte('starts_at', toDateTime);
-          }
-          const { data: appointmentsData, error: appointmentsError } = await query;
-          if (appointmentsError) {
-            console.error(appointmentsError);
-            setLoading(false);
-            return;
-          }
-          const patientUserIds = appointmentsData
-            .map(a => Array.isArray(a.patient) && a.patient.length > 0 ? a.patient[0].user_id : null)
-            .filter((id): id is string => Boolean(id));
-          let profilesMap: { [key: string]: string } = {};
-          if (patientUserIds.length > 0) {
-            const { data: profilesData, error: profilesError } = await supabase
-              .from('profiles')
-              .select('user_id, full_name')
-              .in('user_id', patientUserIds);
-            if (profilesError) {
-              console.error(profilesError);
-            } else {
-              profilesMap = Object.fromEntries(
-                profilesData.map((profile: { user_id: string; full_name: string }) => [profile.user_id, profile.full_name])
-              );
+            const { data: appointmentsData, error: appointmentsError } = await query;
+            if (appointmentsError) {
+              console.error(appointmentsError);
+              setLoading(false);
+              return;
             }
-          }
-          const mergedAppointments = appointmentsData.map(a => {
-            let patientId = Array.isArray(a.patient) && a.patient.length > 0 ? a.patient[0].user_id : undefined;
-            return {
-              ...a,
-              patient_name: patientId && profilesMap[patientId] ? profilesMap[patientId] : 'Unknown Patient',
-            };
-          });
-          setAppointments(mergedAppointments || []);
+            const mergedAppointments = appointmentsData.map(a => {
+              let patientObj = Array.isArray(a.patient) && a.patient.length > 0 ? a.patient[0] : undefined;
+              let patientName = 'Unknown Patient';
+              if (patientObj && patientObj.profile && Array.isArray(patientObj.profile) && patientObj.profile.length > 0) {
+                patientName = patientObj.profile[0].full_name || 'Unknown Patient';
+              }
+              return {
+                ...a,
+                patient_name: patientName,
+              };
+            });
+            setAppointments(mergedAppointments || []);
         }
         setLoading(false);
       })();

@@ -147,7 +147,26 @@ export default function AppointmentDetailsScreen() {
           <Text style={styles.infoText}>DOB: {patient?.DOB || patient?.date_of_birth || "-"}</Text>
           <Text style={styles.infoText}>Phone: {patient?.phone || "-"}</Text>
           <Text style={styles.infoText}>Medicare No: {patient?.medicare_number || "-"}</Text>
-          <Text style={styles.infoText}>Emergency: {patient?.emergency_contact ? JSON.stringify(patient.emergency_contact) : "-"}</Text>
+          {/* Emergency Contact Details */}
+          {patient?.emergency_contact && typeof patient.emergency_contact === 'object' ? (
+            <View style={{ marginTop: 6 }}>
+              <Text style={[styles.sectionTitle, { marginBottom: 2 }]}>Emergency Contact</Text>
+              {Object.entries(patient.emergency_contact).map(([key, value], idx) => {
+                // Format key: capitalize, replace underscores with spaces, capitalize each word
+                const formattedKey = key
+                  .split('_')
+                  .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                  .join(' ');
+                return (
+                  <Text key={idx} style={styles.infoText}>
+                    {formattedKey}: {String(value)}
+                  </Text>
+                );
+              })}
+            </View>
+          ) : (
+            <Text style={styles.infoText}>Emergency: -</Text>
+          )}
         </View>
         {/* Allergies */}
         <View style={styles.card}>
