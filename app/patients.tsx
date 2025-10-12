@@ -1,7 +1,9 @@
-import { useRouter } from "expo-router";
-import React, { useEffect, useState } from "react";
-import { ActivityIndicator, FlatList, Pressable, SafeAreaView, StyleSheet, Text, View } from "react-native";
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, FlatList, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 import { supabase } from '../supabaseClient';
+
 
 type DBUser = {
   id: string;
@@ -24,141 +26,171 @@ type Medication = {
   dosage: string;
   user_id: string;
 };
+  export default function DoctorAppointments() {
+    const router = useRouter();
+    const [appointments, setAppointments] = useState<any[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [user, setUser] = useState<any>(null);
 
-export default function PatientsList() {
-  const router = useRouter();
-  const [patients, setPatients] = useState<DBUser[]>([]);
-  const [medications, setMedications] = useState<Medication[]>([]);
-  const [loading, setLoading] = useState(true);
+    useEffect(() => {
+      (async () => {
+        const { data: { user } } = await supabase.auth.getUser();
+        setUser(user);
+        if (user) {
+          // Step 1: Fetch appointments for this doctor, including patient_profiles
+          const { data: appointmentsData, error: appointmentsError } = await supabase
+            .from('appointments')
+            .select(`
+              id,
+              starts_at,
+              ends_at,
+              status,
+              patient:patient_profiles!patient_id (
+                user_id
+              )
+            `)
+            .eq('doctor_id', user.id)
+            .order('starts_at', { ascending: true });
+          if (appointmentsError) {
+            console.error(appointmentsError);
+            setLoading(false);
+            return;
+          }
 
-  useEffect(() => {
-    (async () => {
-      // Fetch all users
-      const { data: users, error: userError } = await supabase
-        .from('users')
-        .select('id, email, isDoctor');
+          // Step 2: Get all patient user_ids from appointments
+          const patientUserIds = appointmentsData
+            .map(a => Array.isArray(a.patient) && a.patient.length > 0 ? a.patient[0].user_id : null)
+            .filter((id): id is string => Boolean(id));
 
-      // Fetch all medications
-      const { data: meds, error: medsError } = await supabase
-        .from('medications')
-        .select('id, name, dosage, user_id');
+          // Step 3: Fetch profiles for all patient user_ids
+          let profilesMap = {};
+          if (patientUserIds.length > 0) {
+            const { data: profilesData, error: profilesError } = await supabase
+              .from('profiles')
+              .select('user_id, full_name')
+              .in('user_id', patientUserIds);
+            if (profilesError) {
+              console.error(profilesError);
+            } else {
+              profilesMap = Object.fromEntries(
+                profilesData.map(profile => [profile.user_id, profile.full_name])
+              );
+            }
+          }
 
-      if (userError || medsError) {
+          // Step 4: Merge full_name into appointments
+          const mergedAppointments = appointmentsData.map(a => {
+            let patientId = Array.isArray(a.patient) && a.patient.length > 0 ? a.patient[0].user_id : undefined;
+            return {
+              ...a,
+              patient_name: patientId && profilesMap[patientId] ? profilesMap[patientId] : 'Unknown Patient',
+            };
+          });
+          setAppointments(mergedAppointments || []);
+        }
         setLoading(false);
-        return;
-      }
+      })();
+    }, []);
 
-      // Filter users who are NOT doctors (isDoctor !== true)
-      let filteredPatients = (users || []).filter(
-        (u: any) =>
-          !u.isDoctor || u.isDoctor === false || u.isDoctor === "false"
+    if (loading) {
+      return (
+        <SafeAreaView style={styles.container}>
+          <ActivityIndicator />
+        </SafeAreaView>
       );
+    }
 
-      setPatients(filteredPatients);
-      setMedications(meds || []);
-      setLoading(false);
-    })();
-  }, []);
-
-  if (loading) {
     return (
       <SafeAreaView style={styles.container}>
-        <ActivityIndicator />
+        <View style={styles.headerRow}>
+          <Pressable
+            onPress={() => router.replace('/')} // Go back to dashboard
+            style={styles.backBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Back to dashboard"
+          >
+            <Text style={styles.backText}>← Back</Text>
+          </Pressable>
+          <Text style={styles.title}>Appointments</Text>
+          <Pressable onPress={() => router.push('/profile')} style={styles.profileBtn}>
+            <MaterialCommunityIcons name="account-circle-outline" size={22} color="#007AFF" />
+            <Text style={styles.profileText}>Profile</Text>
+          </Pressable>
+        </View>
+        <FlatList
+          data={appointments}
+          keyExtractor={item => item.id}
+          contentContainerStyle={appointments.length === 0 ? styles.emptyContainer : undefined}
+          ListEmptyComponent={<Text style={styles.emptyText}>No appointments scheduled.</Text>}
+          renderItem={({ item }) => (
+            <View style={styles.card}>
+              <View style={styles.cardRow}>
+                <MaterialCommunityIcons name="account" size={28} color="#0EA5E9" />
+                <View style={{ marginLeft: 12 }}>
+                  <Text style={styles.patientName}>{item.patient?.profile?.full_name || 'Unknown Patient'}</Text>
+                  <Text style={styles.timeText}>{formatTime(item.starts_at)} - {formatTime(item.ends_at)}</Text>
+                  <Text style={styles.statusText}>{capitalize(item.status)}</Text>
+                </View>
+              </View>
+            </View>
+          )}
+        />
       </SafeAreaView>
     );
   }
 
-  return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.headerRow}>
-        <Pressable
-          onPress={() => router.replace('/')}
-          style={styles.backBtn}
-          accessibilityRole="button"
-          accessibilityLabel="Back to dashboard"
-        >
-          <Text style={styles.backText}>← Back</Text>
-        </Pressable>
-        <Text style={styles.title}>Patients List</Text>
-      </View>
-      <FlatList
-        data={patients}
-        keyExtractor={item => item.id}
-        renderItem={({ item }) => {
-          const patientMeds = medications.filter(med => med.user_id === item.id);
-          return (
-            <View style={styles.patientCard}>
-              <Text style={styles.patientName}>
-                {item.email}
-              </Text>
-              <Text style={styles.sectionTitle}>Medications:</Text>
-              {patientMeds.length === 0 ? (
-                <Text style={styles.noMeds}>No medications</Text>
-              ) : (
-                patientMeds.map(med => (
-                  <Text key={med.id} style={styles.medication}>
-                    {med.name} ({med.dosage})
-                  </Text>
-                ))
-              )}
-              <Pressable
-                style={styles.addMedBtn}
-                onPress={() => router.push({ pathname: '/medications', params: { user_id: item.id } })}
-                accessibilityRole="button"
-                accessibilityLabel={`Add medication for ${item.email}`}
-              >
-                <Text style={styles.addMedBtnText}>+ Add Medication</Text>
-              </Pressable>
-            </View>
-          );
-        }}
-        ListEmptyComponent={<Text>No patients found.</Text>}
-      />
-    </SafeAreaView>
-  );
-}
+  function formatTime(ts: string) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    return d.toLocaleString('en-AU', { dateStyle: 'medium', timeStyle: 'short' });
+  }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#fff", padding: 16 },
-  headerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 16,
-  },
-  backBtn: {
-    marginRight: 12,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-  },
-  backText: {
-    fontSize: 16,
-    color: "#007AFF",
-    fontWeight: "600",
-  },
-  title: { fontSize: 24, fontWeight: "bold", textAlign: "center", flex: 1 },
-  patientCard: {
-    backgroundColor: "#F1F5F9",
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-  },
-  patientName: { fontSize: 18, fontWeight: "600", marginBottom: 8 },
-  sectionTitle: { fontSize: 15, fontWeight: "500", marginBottom: 4 },
-  medication: { fontSize: 15, marginLeft: 8 },
-  noMeds: { fontSize: 14, color: "#888", marginLeft: 8 },
-  addMedBtn: {
-    marginTop: 10,
-    backgroundColor: "#007AFF",
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    alignSelf: "flex-start",
-  },
-  addMedBtnText: {
-    color: "#fff",
-    fontWeight: "600",
-    fontSize: 15,
-  },
-});
+  function capitalize(str: string) {
+    if (!str) return '';
+    return str.charAt(0).toUpperCase() + str.slice(1);
+  }
+
+  const styles = StyleSheet.create({
+    container: { flex: 1, backgroundColor: '#FFFFFF', paddingHorizontal: 16 },
+    headerRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingTop: 8,
+      paddingBottom: 12,
+    },
+    backBtn: {
+      marginRight: 12,
+      paddingVertical: 4,
+      paddingHorizontal: 8,
+    },
+    backText: {
+      fontSize: 16,
+      color: '#007AFF',
+      fontWeight: '600',
+    },
+    title: { fontSize: 28, fontWeight: '700', letterSpacing: 0.2 },
+    profileBtn: { flexDirection: 'row', alignItems: 'center' },
+    profileText: { marginLeft: 6, fontSize: 14, color: '#007AFF', fontWeight: '600' },
+    card: {
+      backgroundColor: '#F1F5F9',
+      borderRadius: 16,
+      borderWidth: 1,
+      borderColor: '#E2E8F0',
+      padding: 16,
+      marginBottom: 14,
+      shadowColor: '#000',
+      shadowOpacity: 0.05,
+      shadowRadius: 8,
+      elevation: 2,
+    },
+    cardRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+    },
+    patientName: { fontSize: 18, fontWeight: '700', marginBottom: 2 },
+    timeText: { fontSize: 15, color: '#0EA5E9', marginBottom: 2 },
+    statusText: { fontSize: 14, color: '#64748B', fontWeight: '600' },
+    emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+    emptyText: { fontSize: 16, color: '#64748B', textAlign: 'center', marginTop: 40 },
+  });
