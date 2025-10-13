@@ -8,7 +8,7 @@ import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native
 import { useFonts } from 'expo-font';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { supabase } from '../supabaseClient';
 
 export default function RootLayout() {
@@ -21,7 +21,7 @@ export default function RootLayout() {
   useEffect(() => {
     // redirect whenever auth state changes
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
-      const onAuthScreen = ['signin', 'signup', 'auth'].includes(segments[0] as string);
+      const onAuthScreen = ['signin', 'signup', 'signup-doctor', 'auth'].includes(segments[0] as string);
       if (!session && !onAuthScreen) router.replace('/signin');
       if (session && onAuthScreen) router.replace('/');
     });
@@ -29,7 +29,7 @@ export default function RootLayout() {
     // initial check
     (async () => {
       const { data: { session } } = await supabase.auth.getSession();
-      const onAuthScreen = ['signin', 'signup', 'auth'].includes(segments[0] as string);
+      const onAuthScreen = ['signin', 'signup', 'signup-doctor', 'auth'].includes(segments[0] as string);
       if (!session && !onAuthScreen) router.replace('/signin');
       if (session && onAuthScreen) router.replace('/');
       setReady(true);
@@ -46,6 +46,7 @@ export default function RootLayout() {
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="signin" />
         <Stack.Screen name="signup" />
+        <Stack.Screen name="signup-doctor" />
         <Stack.Screen name="auth/callback" />
         <Stack.Screen name="+not-found" options={{ headerShown: true }} />
       </Stack>

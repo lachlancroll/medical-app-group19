@@ -1,8 +1,9 @@
 // app/signup.tsx
 import { useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Button, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { supabase } from '../supabaseClient';
+
 
 export default function SignUpPage() {
   const router = useRouter();
@@ -37,47 +38,54 @@ export default function SignUpPage() {
     setError('');
     setInfo('');
 
-    // Sign up with Supabase Auth
+    // 1) Create auth user + set metadata to mark as doctor
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: { data: { full_name: fullName || undefined, isDoctor: true } },
     });
+    if (error) { setLoading(false); setError(error.message); return; }
 
-    if (error) {
+    // 2) If email confirmation is ON, there is no session now → stop here.
+    const { data: sess } = await supabase.auth.getSession();
+    if (!sess.session) {
       setLoading(false);
-      return setError(error.message);
+      setInfo('Check your email to confirm your account, then sign in.');
+      return;
     }
 
-    // Add user to public.users table
-    // Wait for user to confirm email if confirmation is ON
-    let userEmail: any = email;
-    if (data.user) {
-      userEmail = data.user.email;
+    // 3) Session exists → we can safely use the UID to upsert app rows
+    const { data: userData } = await supabase.auth.getUser();
+    const user = userData?.user;
+    if (!user) {
+      setLoading(false);
+      setError('Could not load user after signup.');
+      return;
     }
 
-    // Insert into users table
-    const { error: insertError } = await supabase
-      .from('users')
-      .insert([
-        {
-          email: userEmail,
-          isDoctor: true,
-        },
-      ]);
+    // upsert into public.users with id = auth.users.id
+    const { error: uErr } = await supabase.from('users').upsert({
+      id: user.id,
+      email: user.email!,
+      isDoctor: true,
+    });
+    if (uErr) { setLoading(false); setError('Failed to save user profile.'); return; }
+
+    // give them a doctor role (optional but recommended)
+    const { error: rErr } = await supabase.from('user_roles').upsert({
+      user_id: user.id,
+      role: 'doctor',
+    });
+    if (rErr) { setLoading(false); setError('Failed to assign doctor role.'); return; }
+
+    // create a doctor profile shell (optional; fill later in onboarding)
+    const { error: dErr } = await supabase.from('doctor_profiles').upsert({
+      user_id: user.id,
+    });
+    if (dErr) { setLoading(false); setError('Failed to create doctor profile.'); return; }
 
     setLoading(false);
-
-    if (insertError) {
-      return setError('Account created, but failed to save user profile.');
-    }
-
-    if (!data.session) {
-      setInfo('Check your email to confirm your account, then come back and sign in.');
-    } else {
-      // If confirmation is OFF, onAuthStateChange will redirect to /(tabs)
-      setInfo('Account created!');
-    }
+    setInfo('Doctor account created!');
   };
 
   return (

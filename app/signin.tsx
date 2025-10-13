@@ -1,12 +1,12 @@
 // app/(auth)/signin.tsx (or wherever your SignInPage lives)
 import { useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Button, StyleSheet, Text, TextInput, View } from 'react-native';
 import { supabase } from '../supabaseClient';
 
+
 export default function SignInPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string>('');
@@ -33,23 +33,9 @@ export default function SignInPage() {
     // success will redirect via onAuthStateChange
   };
 
-  const handleSignUp = async () => {
-    setLoading(true); setError('');
-    const { data, error } = await supabase.auth.signUp({ email, password });
-    setLoading(false);
-    if (error) return setError(error.message);
-
-    // If email confirmations are ON in Supabase Auth settings,
-    // user must verify their email before session starts.
-    if (!data.session) {
-      setError('Check your inbox to confirm your email, then sign in.');
-    }
-    // If confirmations are OFF, onAuthStateChange will redirect.
-  };
-
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>{mode === 'signin' ? 'Sign In' : 'Create Account'}</Text>
+      <Text style={styles.title}>Sign In</Text>
 
       <TextInput
         style={styles.input}
@@ -74,24 +60,14 @@ export default function SignInPage() {
 
       {loading ? (
         <ActivityIndicator />
-      ) : mode === 'signin' ? (
+      ) : (
         <>
           <Button title="Sign In" onPress={handleSignIn} />
-          <Text style={styles.link} onPress={() => { setMode('signup'); setError(''); }}>
+          <Text style={styles.link} onPress={() => router.replace('/signup')}>
             Need an account? Sign up
           </Text>
           <Text style={styles.link} onPress={() => { router.replace('/signup-doctor'); }}>
-            Need an doctor account? Sign up as Doctor
-          </Text>
-        </>
-      ) : (
-        <>
-          <Button title="Create Account" onPress={handleSignUp} />
-          <Text style={styles.link} onPress={() => { setMode('signin'); setError(''); }}>
-            Have an account? Sign in
-          </Text>
-          <Text style={styles.link} onPress={() => router.replace('/signup')}>
-            Need an account? Sign up
+            Need a doctor account? Sign up as Doctor
           </Text>
         </>
       )}
