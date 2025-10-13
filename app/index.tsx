@@ -4,12 +4,11 @@ import { useRouter } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   Pressable,
   SafeAreaView,
   StyleSheet,
   Text,
-  View,
+  View
 } from "react-native";
 import { supabase } from '../supabaseClient';
 
@@ -63,7 +62,7 @@ function PatientHome({ user, router }: { user: any, router: any }) {
         <LargeActionButton
           label="Appointments"
           icon={<Ionicons name="calendar" size={30} />}
-          onPress={() => Alert.alert("Coming soon", "Appointments screen")}
+          onPress={() => router.push('/appointments')}
         />
         <LargeActionButton
           label="AI Assistant"
