@@ -1,20 +1,21 @@
 // app/appointments/index.tsx
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  FlatList,
   Modal,
   Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
+  SectionList,
   StyleSheet,
   Text,
   TextInput,
-  View,
+  View
 } from 'react-native';
 import { supabase } from '../supabaseClient';
 
@@ -26,11 +27,12 @@ type AppointmentRow = {
   status: string;
   patient_name?: string;
   doctor_name?: string;
+  doctor_id?: string;
+  patient_id?: string;
 };
 
 type DoctorOpt = { id: string; name: string };
 type PatientOpt = { id: string; name: string };
-
 type UserRole = 'doctor' | 'patient' | 'both' | 'none';
 
 const isWeb = Platform.OS === 'web';
@@ -42,7 +44,7 @@ export default function AppointmentsScreen() {
   const [user, setUser] = useState<DBUser | null>(null);
   const [role, setRole] = useState<UserRole>('none');
 
-  // lists
+  // data
   const [appointments, setAppointments] = useState<AppointmentRow[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -54,11 +56,11 @@ export default function AppointmentsScreen() {
   const [modalOpen, setModalOpen] = useState(false);
   const [doctors, setDoctors] = useState<DoctorOpt[]>([]);
   const [patients, setPatients] = useState<PatientOpt[]>([]);
-  const [selDoctor, setSelDoctor] = useState<string>('');   // only used if role === 'patient'
-  const [selPatient, setSelPatient] = useState<string>(''); // only used if role === 'doctor'
-  const [dateStr, setDateStr]   = useState<string>('');     // YYYY-MM-DD
+  const [selDoctor, setSelDoctor] = useState<string>('');   // used if role === 'patient'
+  const [selPatient, setSelPatient] = useState<string>(''); // used if role === 'doctor'
+  const [dateStr, setDateStr] = useState<string>('');       // YYYY-MM-DD
   const [startStr, setStartStr] = useState<string>('09:00'); // HH:MM
-  const [endStr, setEndStr]     = useState<string>('09:30'); // HH:MM
+  const [endStr, setEndStr] = useState<string>('09:30');    // HH:MM
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string>('');
 
@@ -72,7 +74,9 @@ export default function AppointmentsScreen() {
       const qs = params.toString();
       const newUrl = `${window.location.pathname}${qs ? `?${qs}` : ''}`;
       window.history.replaceState({}, '', newUrl);
-    } catch {}
+    } catch (e) {
+      console.warn('updateUrlParams failed:', e);
+    }
   };
 
   const defaultDates = () => {
@@ -94,40 +98,45 @@ export default function AppointmentsScreen() {
   /* ----------------------- init (user, role) ---------------------- */
   useEffect(() => {
     const init = async () => {
-      const [{ data: udata }] = await Promise.all([supabase.auth.getUser()]);
-      const u = udata?.user
-        ? { id: udata.user.id, email: udata.user.email ?? null }
-        : null;
-      setUser(u);
+      try {
+        const { data: udata, error: uerr } = await supabase.auth.getUser();
+        if (uerr) console.warn('auth.getUser error:', uerr);
+        const u = udata?.user
+          ? { id: udata.user.id, email: udata.user.email ?? null }
+          : null;
+        setUser(u);
 
-      const { from, to } = defaultDates();
-      setFromDate(from);
-      setToDate(to);
-      setDateStr(from);
+        const { from, to } = defaultDates();
+        setFromDate(from);
+        setToDate(to);
+        setDateStr(from);
 
-      if (!u) {
-        setRole('none');
+        if (!u) {
+          setRole('none');
+          setLoading(false);
+          return;
+        }
+
+        const [dr, pt] = await Promise.all([
+          supabase.from('doctor_profiles').select('user_id').eq('user_id', u.id).maybeSingle(),
+          supabase.from('patient_profiles').select('user_id').eq('user_id', u.id).maybeSingle(),
+        ]);
+
+        if (dr.error) console.warn('doctor_profiles role check error:', dr.error);
+        if (pt.error) console.warn('patient_profiles role check error:', pt.error);
+
+        const isDoctor  = !dr.error && !!dr.data;
+        const isPatient = !pt.error && !!pt.data;
+        setRole(isDoctor && isPatient ? 'both' : isDoctor ? 'doctor' : isPatient ? 'patient' : 'none');
+
+        await Promise.all([loadDoctorOptions(), loadPatientOptions()]);
+      } catch (e) {
+        console.error('init fatal:', e);
+      } finally {
         setLoading(false);
-        return;
       }
-
-      // detect role by membership in doctor_profiles / patient_profiles
-      const [dr, pt] = await Promise.all([
-        supabase.from('doctor_profiles').select('user_id').eq('user_id', u.id).maybeSingle(),
-        supabase.from('patient_profiles').select('user_id').eq('user_id', u.id).maybeSingle(),
-      ]);
-
-      const isDoctor  = !dr.error && !!dr.data;
-      const isPatient = !pt.error && !!pt.data;
-      setRole(isDoctor && isPatient ? 'both' : isDoctor ? 'doctor' : isPatient ? 'patient' : 'none');
-
-      // preload pickers (safe two-step lookup; works even without FK join)
-      await Promise.all([loadDoctorOptions(), loadPatientOptions()]);
-
-      setLoading(false);
     };
     init();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /* ---------------- fetch appointments for this user -------------- */
@@ -136,101 +145,115 @@ export default function AppointmentsScreen() {
       if (!user || role === 'none' || !fromDate || !toDate) return;
       setLoading(true);
 
-      let query = supabase
-        .from('appointments')
-        .select('id, starts_at, ends_at, status, doctor_id, patient_id')
-        .order('starts_at', { ascending: true });
+      try {
+        let query = supabase
+          .from('appointments')
+          .select('id, starts_at, ends_at, status, doctor_id, patient_id')
+          .order('starts_at', { ascending: true });
 
-      // scope by role
-      if (role === 'doctor') query = query.eq('doctor_id', user.id);
-      else if (role === 'patient') query = query.eq('patient_id', user.id);
-      else query = query.or(`doctor_id.eq.${user.id},patient_id.eq.${user.id}`); // 'both'
+        if (role === 'doctor') query = query.eq('doctor_id', user.id);
+        else if (role === 'patient') query = query.eq('patient_id', user.id);
+        else query = query.or(`doctor_id.eq.${user.id},patient_id.eq.${user.id}`);
 
-      // date window
-      query = query.gte('starts_at', fromDate);
-      let toEnd = /^\d{4}-\d{2}-\d{2}$/.test(toDate) ? `${toDate}T23:59:59` : toDate;
-      query = query.lte('starts_at', toEnd);
+        const toEnd = /^\d{4}-\d{2}-\d{2}$/.test(toDate) ? `${toDate}T23:59:59` : toDate;
+        query = query.gte('starts_at', fromDate).lte('starts_at', toEnd);
 
-      const { data, error } = await query;
-      if (error) {
-        console.error('appointments error:', error);
-        setAppointments([]);
+        const { data, error, status, statusText } = await query;
+        if (error) {
+          console.error('appointments query error:', { error, status, statusText });
+          setAppointments([]);
+          return;
+        }
+
+        const rows = (data ?? []) as any[];
+        const doctorIds = Array.from(new Set(rows.map(r => r.doctor_id).filter(Boolean)));
+        const patientIds = Array.from(new Set(rows.map(r => r.patient_id).filter(Boolean)));
+
+        const [docNames, patNames] = await Promise.all([
+          lookupNamesByIds(doctorIds),
+          lookupNamesByIds(patientIds),
+        ]);
+
+        const merged: AppointmentRow[] = rows.map(r => ({
+          id: r.id,
+          starts_at: r.starts_at,
+          ends_at: r.ends_at,
+          status: r.status,
+          doctor_id: r.doctor_id,
+          patient_id: r.patient_id,
+          doctor_name: docNames[r.doctor_id] ?? shortId(r.doctor_id) ?? 'Doctor',
+          patient_name: patNames[r.patient_id] ?? shortId(r.patient_id) ?? 'Patient',
+        }));
+
+        setAppointments(merged);
+      } catch (e) {
+        console.error('appointments fetch fatal:', e);
+      } finally {
         setLoading(false);
-        return;
       }
-
-      // decorate with doctor/patient display names
-      const rows = data ?? [];
-      const doctorIds = Array.from(new Set(rows.map(r => r.doctor_id).filter(Boolean)));
-      const patientIds = Array.from(new Set(rows.map(r => r.patient_id).filter(Boolean)));
-
-      const [docNames, patNames] = await Promise.all([
-        lookupNamesByIds(doctorIds),
-        lookupNamesByIds(patientIds),
-      ]);
-
-      const merged: AppointmentRow[] = rows.map(r => ({
-        id: r.id,
-        starts_at: r.starts_at,
-        ends_at: r.ends_at,
-        status: r.status,
-        doctor_name: docNames[r.doctor_id] ?? 'Doctor',
-        patient_name: patNames[r.patient_id] ?? 'Patient',
-      }));
-
-      setAppointments(merged);
-      setLoading(false);
     };
     run();
   }, [user, role, fromDate, toDate]);
 
   /* -------------------------- pickers ----------------------------- */
   async function loadDoctorOptions() {
-    const drRes = await supabase.from('doctor_profiles').select('user_id, provider_number');
-    if (drRes.error) {
-      console.error('doctor_profiles error:', drRes.error);
-      setDoctors([]);
-      return;
-    }
-    const ids = (drRes.data ?? []).map((r: any) => r.user_id as string);
-    const nameById = await lookupNamesByIds(ids);
-    const providerById: Record<string, string | undefined> = {};
-    for (const r of drRes.data ?? []) providerById[r.user_id] = r.provider_number;
+    try {
+      const drRes = await supabase.from('doctor_profiles').select('user_id, provider_number');
+      if (drRes.error) {
+        console.error('doctor_profiles error:', drRes.error);
+        setDoctors([]);
+        return;
+      }
+      const ids = (drRes.data ?? []).map((r: any) => r.user_id as string);
+      const nameById = await lookupNamesByIds(ids);
+      const providerById: Record<string, string | undefined> = {};
+      for (const r of drRes.data ?? []) providerById[r.user_id] = r.provider_number;
 
-    const opts = ids.map(id => ({
-      id,
-      name: nameById[id] || providerById[id] || 'Doctor',
-    }));
-    setDoctors(opts);
+      const opts = ids.map(id => ({
+        id,
+        name: nameById[id] || providerById[id] || shortId(id) || 'Doctor',
+      }));
+      setDoctors(opts);
+    } catch (e) {
+      console.error('loadDoctorOptions fatal:', e);
+      setDoctors([]);
+    }
   }
 
   async function loadPatientOptions() {
-    const ptRes = await supabase.from('patient_profiles').select('user_id');
-    if (ptRes.error) {
-      console.error('patient_profiles error:', ptRes.error);
+    try {
+      const ptRes = await supabase.from('patient_profiles').select('user_id');
+      if (ptRes.error) {
+        console.error('patient_profiles error:', ptRes.error);
+        setPatients([]);
+        return;
+      }
+      const ids = (ptRes.data ?? []).map((r: any) => r.user_id as string);
+      const nameById = await lookupNamesByIds(ids);
+      setPatients(ids.map(id => ({ id, name: nameById[id] || shortId(id) || 'Patient' })));
+    } catch (e) {
+      console.error('loadPatientOptions fatal:', e);
       setPatients([]);
-      return;
     }
-    const ids = (ptRes.data ?? []).map((r: any) => r.user_id as string);
-    const nameById = await lookupNamesByIds(ids);
-    setPatients(ids.map(id => ({ id, name: nameById[id] || 'Patient' })));
   }
 
-  // Tries profiles for names; falls back to nothing (caller supplies fallback label)
   async function lookupNamesByIds(ids: string[]) {
     const map: Record<string, string> = {};
     if (!ids.length) return map;
-    const prof = await supabase.from('profiles').select('user_id, full_name').in('user_id', ids);
-    if (prof.error) {
-      console.error('profiles lookup error:', prof.error);
-      return map;
+    try {
+      const prof = await supabase.from('profiles').select('user_id, full_name').in('user_id', ids);
+      if (prof.error) {
+        console.error('profiles lookup error:', prof.error);
+        return map;
+      }
+      for (const row of prof.data ?? []) {
+        if (row.user_id) map[row.user_id] = row.full_name || '';
+      }
+      const missing = ids.filter(id => !map[id]);
+      if (missing.length) console.warn('No profile name for IDs:', missing);
+    } catch (e) {
+      console.error('lookupNamesByIds fatal:', e);
     }
-    for (const row of prof.data ?? []) {
-      if (row.user_id) map[row.user_id] = row.full_name || '';
-    }
-    // Log missing to help debugging
-    const missing = ids.filter(id => !map[id]);
-    if (missing.length) console.warn('No profile name for IDs:', missing);
     return map;
   }
 
@@ -254,115 +277,165 @@ export default function AppointmentsScreen() {
     const doctor_id  = role === 'doctor' ? user!.id : selDoctor;
     const patient_id = role === 'patient' ? user!.id : selPatient;
 
-    setCreating(true);
-    const { error } = await supabase.from('appointments').insert([{
-      starts_at,
-      ends_at,
-      doctor_id,
-      patient_id,
-      status: 'scheduled',
-      created_by: user!.id,
-    }]);
-    setCreating(false);
+    try {
+      setCreating(true);
+      const createdBy =
+        role === 'doctor'
+          ? user!.id
+          : role === 'patient'
+            ? selDoctor
+            : selPatient
+              ? user!.id
+              : selDoctor;
 
-    if (error) {
-      console.error('create appointment error:', error);
-      setCreateError(error.message || 'Failed to create appointment.');
-      return;
+      if (!createdBy) {
+        setCreateError('Please choose a doctor.');
+        setCreating(false);
+        return;
+      }
+
+      const { error, status, statusText } = await supabase
+        .from('appointments')
+        .insert([{
+          starts_at,
+          ends_at,
+          doctor_id,
+          patient_id,
+          status: 'scheduled',
+          created_by: createdBy,
+        }]);
+
+      if (error) {
+        console.error('create appointment error:', { error, status, statusText });
+        setCreateError(error.message || 'Failed to create appointment.');
+        return;
+      }
+      setModalOpen(false);
+      setSelDoctor('');
+      setSelPatient('');
+      Alert.alert('Success', 'Appointment created.');
+      setFromDate(f => f);
+    } catch (e) {
+      console.error('createAppointment fatal:', e);
+      setCreateError('Unexpected error creating appointment.');
+    } finally {
+      setCreating(false);
     }
-
-    setModalOpen(false);
-    setSelDoctor('');
-    setSelPatient('');
-    Alert.alert('Success', 'Appointment created.');
-    // re-fetch with same filters
-    setFromDate(f => f);
   };
+
+  /* -------------------------- derived UI -------------------------- */
+  const sections = useMemo(() => {
+    const byDay: Record<string, AppointmentRow[]> = {};
+    for (const a of appointments) {
+      const k = new Date(a.starts_at).toISOString().slice(0, 10);
+      (byDay[k] ||= []).push(a);
+    }
+    return Object.entries(byDay)
+      .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+      .map(([day, items]) => ({ title: day, data: items }));
+  }, [appointments]);
+
+  const canCreate = role === 'doctor' || role === 'patient' || role === 'both';
 
   /* ----------------------------- UI ------------------------------- */
   if (loading) {
     return (
-      <SafeAreaView style={styles.container}>
-        <ActivityIndicator />
-      </SafeAreaView>
+      <LinearGradient colors={['#0ea5e9', '#6366f1']} start={{x:0,y:0}} end={{x:1,y:1}} style={{flex:1}}>
+        <SafeAreaView style={styles.container}>
+          <ActivityIndicator color="#fff" />
+        </SafeAreaView>
+      </LinearGradient>
     );
   }
 
-  const canCreate = role === 'doctor' || role === 'patient' || role === 'both';
-
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.headerRow}>
-        <Pressable onPress={() => router.replace('/')} style={styles.backBtn}>
-          <Text style={styles.backText}>← Back</Text>
-        </Pressable>
+    <LinearGradient colors={['#0ea5e9', '#6366f1']} start={{x:0,y:0}} end={{x:1,y:1}} style={{flex:1}}>
+      <SafeAreaView style={styles.container}>
+        {/* header */}
+        <View style={styles.headerRow}>
+          <Pressable onPress={() => router.replace('/')} style={styles.backBtn}>
+            <Text style={styles.backText}>← Back</Text>
+          </Pressable>
 
-        <Text style={styles.title}>Appointments</Text>
+          <Text style={styles.title}>Appointments</Text>
 
-        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          {canCreate && (
-            <Pressable onPress={() => setModalOpen(true)} style={styles.newBtn}>
-              <MaterialCommunityIcons name="plus-circle-outline" size={20} color="#fff" />
-              <Text style={styles.newBtnText}>New</Text>
-            </Pressable>
-          )}
           <Pressable onPress={() => router.push('/profile')} style={styles.profileBtn}>
-            <MaterialCommunityIcons name="account-circle-outline" size={22} color="#007AFF" />
+            <MaterialCommunityIcons name="account-circle-outline" size={22} color="#fff" />
             <Text style={styles.profileText}>Profile</Text>
           </Pressable>
         </View>
-      </View>
 
-      {/* Date Filters */}
-      <View style={styles.filterRow}>
-        <Text style={styles.filterLabel}>From (YYYY-MM-DD):</Text>
-        <TextInput
-          style={styles.filterInput}
-          value={fromDate}
-          onChangeText={(val) => { setFromDate(val); updateUrlParams(val, toDate); }}
-          placeholder="e.g. 2025-10-12"
-          keyboardType="default"
-          maxLength={10}
-          autoCapitalize="none"
-        />
-        <Text style={[styles.filterLabel, { marginLeft: 12 }]}>To (YYYY-MM-DD):</Text>
-        <TextInput
-          style={styles.filterInput}
-          value={toDate}
-          onChangeText={(val) => { setToDate(val); updateUrlParams(fromDate, val); }}
-          placeholder="e.g. 2025-11-12"
-          keyboardType="default"
-          maxLength={10}
-          autoCapitalize="none"
-        />
-      </View>
+        {/* surface card for filters + list */}
+        <View style={styles.surface}>
+          {/* quick filters */}
+          <View style={styles.quickRow}>
+            <FilterChip label="7 days" onPress={() => setRangeDays(7)} />
+            <FilterChip label="30 days" onPress={() => setRangeDays(30)} />
+            <FilterChip label="All next month" onPress={() => setNextMonth()} />
+          </View>
 
-      <FlatList
-        data={appointments}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={appointments.length === 0 ? styles.emptyContainer : undefined}
-        ListEmptyComponent={<Text style={styles.emptyText}>No appointments scheduled.</Text>}
-        renderItem={({ item }) => (
-          <Pressable
-            style={styles.card}
-            onPress={() => router.push(`/appointments/${item.id}`)}
-            android_ripple={{ color: '#E2E8F0' }}
-          >
-            <View style={styles.cardRow}>
-              <MaterialCommunityIcons name="calendar" size={28} color="#0EA5E9" />
-              <View style={{ marginLeft: 12 }}>
-                <Text style={styles.patientName}>
-                  {role === 'doctor' ? (item.patient_name ?? 'Patient') : (item.doctor_name ?? 'Doctor')}
-                </Text>
-                <Text style={styles.timeText}>
-                  {formatTime(item.starts_at)} - {formatTime(item.ends_at)}
-                </Text>
-                <Text style={styles.statusText}>{capitalize(item.status)}</Text>
+          {/* Date inputs */}
+          <View style={styles.filterRow}>
+            <Text style={styles.filterLabel}>From</Text>
+            <TextInput
+              style={styles.filterInput}
+              value={fromDate}
+              onChangeText={(val) => { setFromDate(val); updateUrlParams(val, toDate); }}
+              placeholder="YYYY-MM-DD"
+              autoCapitalize="none"
+              maxLength={10}
+            />
+            <Text style={[styles.filterLabel, { marginLeft: 12 }]}>To</Text>
+            <TextInput
+              style={styles.filterInput}
+              value={toDate}
+              onChangeText={(val) => { setToDate(val); updateUrlParams(fromDate, val); }}
+              placeholder="YYYY-MM-DD"
+              autoCapitalize="none"
+              maxLength={10}
+            />
+          </View>
+
+          {/* list */}
+          <SectionList
+            sections={sections}
+            keyExtractor={(item) => item.id}
+            stickySectionHeadersEnabled
+            contentContainerStyle={sections.length === 0 ? styles.emptyContainer : undefined}
+            ListEmptyComponent={<Text style={styles.emptyText}>No appointments scheduled.</Text>}
+            renderSectionHeader={({ section: { title } }) => (
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionHeaderText}>{formatDay(title)}</Text>
               </View>
-            </View>
+            )}
+            renderItem={({ item }) => (
+              <Pressable
+                style={styles.card}
+                onPress={() => router.push(`/appointments/${item.id}`)}
+                android_ripple={{ color: '#E2E8F0' }}
+              >
+                <View style={styles.cardRow}>
+                  <MaterialCommunityIcons name="calendar" size={28} color="#0EA5E9" />
+                  <View style={{ marginLeft: 12, flex: 1 }}>
+                    <Text style={styles.counterpartName}>
+                      {role === 'doctor' ? (item.patient_name ?? 'Patient') : (item.doctor_name ?? 'Doctor')}
+                    </Text>
+                    <Text style={styles.timeText}>{formatRange(item.starts_at, item.ends_at)}</Text>
+                  </View>
+                  <StatusBadge status={item.status} />
+                </View>
+              </Pressable>
+            )}
+          />
+        </View>
+
+        {/* FAB */}
+        {canCreate && (
+          <Pressable style={styles.fab} onPress={() => setModalOpen(true)}>
+            <MaterialCommunityIcons name="plus" size={26} color="#fff" />
           </Pressable>
         )}
-      />
+      </SafeAreaView>
 
       {/* Create appointment modal */}
       <Modal visible={modalOpen} animationType="slide" transparent>
@@ -370,7 +443,6 @@ export default function AppointmentsScreen() {
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>New Appointment</Text>
             <ScrollView contentContainerStyle={{ paddingBottom: 8 }}>
-              {/* If user is a PATIENT → pick DOCTOR; lock patient to self */}
               {(role === 'patient' || role === 'both') && (
                 <>
                   <Text style={styles.inputLabel}>Doctor</Text>
@@ -391,7 +463,6 @@ export default function AppointmentsScreen() {
                 </>
               )}
 
-              {/* If user is a DOCTOR → pick PATIENT; lock doctor to self */}
               {(role === 'doctor' || role === 'both') && (
                 <>
                   <Text style={styles.inputLabel}>Patient</Text>
@@ -414,7 +485,6 @@ export default function AppointmentsScreen() {
                 </>
               )}
 
-              {/* Date & times */}
               <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
               <TextInput
                 style={styles.textInput}
@@ -465,16 +535,77 @@ export default function AppointmentsScreen() {
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
+    </LinearGradient>
   );
+
+  /* ---- local helpers (component scope) ---- */
+  function setRangeDays(n: number) {
+    const start = new Date();
+    const end = new Date();
+    end.setDate(start.getDate() + n);
+    setFromDate(start.toISOString().slice(0, 10));
+    setToDate(end.toISOString().slice(0, 10));
+    updateUrlParams(start.toISOString().slice(0, 10), end.toISOString().slice(0, 10));
+  }
+  function setNextMonth() {
+    const d = new Date();
+    const start = new Date(d.getFullYear(), d.getMonth() + 1, 1);
+    const end = new Date(d.getFullYear(), d.getMonth() + 2, 0);
+    setFromDate(start.toISOString().slice(0, 10));
+    setToDate(end.toISOString().slice(0, 10));
+    updateUrlParams(start.toISOString().slice(0, 10), end.toISOString().slice(0, 10));
+  }
 }
 
+/* ------------------------------ atoms ----------------------------- */
+const StatusBadge = ({ status }: { status: string }) => {
+  const label = (status || '').toLowerCase();
+  const bg =
+    label === 'cancelled' ? '#fee2e2' :
+    label === 'completed' ? '#dcfce7' :
+    '#e0f2fe';
+  const fg =
+    label === 'cancelled' ? '#b91c1c' :
+    label === 'completed' ? '#166534' :
+    '#0369a1';
+  return (
+    <View style={[styles.badge, { backgroundColor: bg }]}>
+      <Text style={[styles.badgeText, { color: fg }]}>{capitalize(label || 'scheduled')}</Text>
+    </View>
+  );
+};
+
+const FilterChip = ({ label, onPress }: { label: string; onPress: () => void }) => (
+  <Pressable onPress={onPress} style={styles.chip}>
+    <Text style={styles.chipText}>{label}</Text>
+  </Pressable>
+);
+
 /* ------------------------------ utils ----------------------------- */
-function formatTime(ts: string) {
-  if (!ts) return '';
-  const d = new Date(ts);
-  try { return d.toLocaleString('en-AU', { dateStyle: 'medium', timeStyle: 'short' }); }
-  catch { return d.toISOString(); }
+function shortId(id?: string) {
+  if (!id) return '';
+  return id.slice(0, 4) + '…' + id.slice(-4);
+}
+function formatDay(isoYmd: string) {
+  try {
+    const d = new Date(isoYmd + 'T00:00:00');
+    return d.toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric' });
+  } catch {
+    return isoYmd;
+  }
+}
+function formatRange(startIso: string, endIso: string) {
+  const s = new Date(startIso);
+  const e = new Date(endIso);
+  try {
+    const sameDay = s.toDateString() === e.toDateString();
+    const sd = s.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+    const st = s.toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' });
+    const et = e.toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' });
+    return sameDay ? `${sd}, ${st} – ${et}` : `${sd}, ${st} → ${e.toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })}`;
+  } catch {
+    return `${startIso} – ${endIso}`;
+  }
 }
 function capitalize(s: string) {
   if (!s) return '';
@@ -483,31 +614,53 @@ function capitalize(s: string) {
 
 /* ------------------------------ styles ---------------------------- */
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FFFFFF', paddingHorizontal: 16 },
-  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 8, paddingBottom: 12 },
-  backBtn: { marginRight: 12, paddingVertical: 4, paddingHorizontal: 8 },
-  backText: { fontSize: 16, color: '#007AFF', fontWeight: '600' },
-  title: { fontSize: 28, fontWeight: '700', letterSpacing: 0.2 },
-  profileBtn: { flexDirection: 'row', alignItems: 'center', marginLeft: 12 },
-  profileText: { marginLeft: 6, fontSize: 14, color: '#007AFF', fontWeight: '600' },
-  newBtn: { backgroundColor: '#0EA5E9', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, marginRight: 10, flexDirection: 'row', alignItems: 'center', gap: 6 },
-  newBtnText: { color: '#fff', fontWeight: '700' },
+  container: { flex: 1, paddingHorizontal: 16, paddingBottom: 16 },
+  // header sits on the gradient
+  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 6, paddingBottom: 12 },
+  backBtn: { paddingVertical: 4, paddingHorizontal: 8 },
+  backText: { fontSize: 16, color: '#FFFFFF', fontWeight: '700' },
+  title: { fontSize: 26, fontWeight: '800', letterSpacing: 0.2, color: '#FFFFFF' },
+  profileBtn: { flexDirection: 'row', alignItems: 'center' },
+  profileText: { marginLeft: 6, fontSize: 14, color: '#FFFFFF', fontWeight: '700' },
 
-  card: { backgroundColor: '#F1F5F9', borderRadius: 16, borderWidth: 1, borderColor: '#E2E8F0', padding: 16, marginBottom: 14, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 8, elevation: 2 },
+  // white surface for content
+  surface: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.35)',
+    padding: 12,
+    flex: 1,
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    elevation: 3,
+  },
+
+  quickRow: { flexDirection: 'row', gap: 8, marginBottom: 8, flexWrap: 'wrap' },
+  chip: { backgroundColor: '#EFF6FF', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, borderWidth: 1, borderColor: '#DBEAFE' },
+  chipText: { color: '#1D4ED8', fontWeight: '700' },
+
+  filterRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' },
+  filterLabel: { fontSize: 15, marginRight: 8, color: '#0EA5E9', fontWeight: '700' },
+  filterInput: { borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, fontSize: 15, minWidth: 120, backgroundColor: '#F8FAFC', marginBottom: 8 },
+
+  sectionHeader: { backgroundColor: '#F8FAFC', paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, marginTop: 6, marginBottom: 6 },
+  sectionHeaderText: { fontSize: 13, color: '#334155', fontWeight: '800', letterSpacing: 0.3 },
+
+  card: { backgroundColor: '#FFFFFF', borderRadius: 16, borderWidth: 1, borderColor: '#E2E8F0', padding: 16, marginBottom: 12, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 8, elevation: 2 },
   cardRow: { flexDirection: 'row', alignItems: 'center' },
-  patientName: { fontSize: 18, fontWeight: '700', marginBottom: 2 },
-  timeText: { fontSize: 15, color: '#0EA5E9', marginBottom: 2 },
-  statusText: { fontSize: 14, color: '#64748B', fontWeight: '600' },
+  counterpartName: { fontSize: 18, fontWeight: '800', marginBottom: 2, color: '#0F172A' },
+  timeText: { fontSize: 14, color: '#0EA5E9' },
+  badge: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6, alignSelf: 'flex-start' },
+  badgeText: { fontSize: 12, fontWeight: '800' },
+
   emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   emptyText: { fontSize: 16, color: '#64748B', textAlign: 'center', marginTop: 40 },
 
-  filterRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' },
-  filterLabel: { fontSize: 15, marginRight: 8, color: '#0EA5E9', fontWeight: '600' },
-  filterInput: { borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, fontSize: 15, minWidth: 120, backgroundColor: '#F8FAFC', marginBottom: 8 },
-
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'center', padding: 16 },
   modalCard: { backgroundColor: '#fff', borderRadius: 16, padding: 16, maxHeight: '85%' },
-  modalTitle: { fontSize: 20, fontWeight: '700', marginBottom: 8 },
+  modalTitle: { fontSize: 20, fontWeight: '800', marginBottom: 8 },
   inputLabel: { fontWeight: '700', marginTop: 10, marginBottom: 6 },
   textInput: { borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, fontSize: 15, backgroundColor: '#F8FAFC' },
   helpText: { color: '#64748B', fontStyle: 'italic' },
@@ -523,4 +676,20 @@ const styles = StyleSheet.create({
   saveBtn: { backgroundColor: '#0EA5E9' },
   cancelText: { color: '#0F172A', fontWeight: '700' },
   saveText: { color: '#fff', fontWeight: '700' },
+
+  fab: {
+    position: 'absolute',
+    right: 20,
+    bottom: 24,
+    backgroundColor: '#0EA5E9',
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+  },
 });

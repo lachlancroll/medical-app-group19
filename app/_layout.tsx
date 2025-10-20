@@ -9,6 +9,7 @@ import { useFonts } from 'expo-font';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect, useState } from 'react';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../supabaseClient';
 
 export default function RootLayout() {
@@ -19,14 +20,11 @@ export default function RootLayout() {
   const segments = useSegments();
 
   useEffect(() => {
-    // redirect whenever auth state changes
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
       const onAuthScreen = ['signin', 'signup', 'signup-doctor', 'auth'].includes(segments[0] as string);
       if (!session && !onAuthScreen) router.replace('/signin');
       if (session && onAuthScreen) router.replace('/');
     });
-
-    // initial check
     (async () => {
       const { data: { session } } = await supabase.auth.getSession();
       const onAuthScreen = ['signin', 'signup', 'signup-doctor', 'auth'].includes(segments[0] as string);
@@ -34,23 +32,37 @@ export default function RootLayout() {
       if (session && onAuthScreen) router.replace('/');
       setReady(true);
     })();
-
     return () => sub.subscription.unsubscribe();
   }, [router, segments]);
 
   if (!fontsLoaded || !ready) return null;
 
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="(tabs)" />
-        <Stack.Screen name="signin" />
-        <Stack.Screen name="signup" />
-        <Stack.Screen name="signup-doctor" />
-        <Stack.Screen name="auth/callback" />
-        <Stack.Screen name="+not-found" options={{ headerShown: true }} />
-      </Stack>
-      <StatusBar style="auto" />
-    </ThemeProvider>
+    <SafeAreaProvider>
+      <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+        <StackWithSafePadding />
+        <StatusBar style="light" translucent backgroundColor="transparent" />
+      </ThemeProvider>
+    </SafeAreaProvider>
+  );
+}
+
+function StackWithSafePadding() {
+  const insets = useSafeAreaInsets();
+  return (
+    <Stack
+      screenOptions={{
+        headerShown: false,
+        // global top space that respects notches/status bar
+        contentStyle: { paddingTop: insets.top + 8 },
+      }}
+    >
+      <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="signin" />
+      <Stack.Screen name="signup" />
+      <Stack.Screen name="signup-doctor" />
+      <Stack.Screen name="auth/callback" />
+      <Stack.Screen name="+not-found" options={{ headerShown: true }} />
+    </Stack>
   );
 }
