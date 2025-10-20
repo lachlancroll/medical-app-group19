@@ -54,11 +54,43 @@ async function ensurePatientProfile(uid: string) {
   if (error) throw error;
 }
 
-async function ensureAppUserRow(uid: string) {
-  const { data: u } = await supabase.auth.getUser();
-  const email = u?.user?.email ?? null;
-  const { error } = await supabase.from("users").upsert({ id: uid, email }, { onConflict: "id" });
+/**
+ * Finds a doctor linked to this patient via doctor_patient.
+ * Returns the doctor_profiles.user_id or throws if none.
+ */
+async function getLinkedDoctorId(patientId: string): Promise<string> {
+  const { data, error } = await supabase
+    .from("doctor_patient")
+    .select("doctor_id")
+    .eq("patient_id", patientId)
+    .limit(1)
+    .maybeSingle();
+
   if (error) throw error;
+  const doctorId = data?.doctor_id as string | undefined;
+  if (!doctorId) {
+    throw new Error(
+      "No linked doctor found for this patient. Ask an admin to add a row in doctor_patient."
+    );
+  }
+  return doctorId;
+}
+
+async function confirmRemove(title: string, message: string): Promise<boolean> {
+  if (Platform.OS === "web") {
+    return Promise.resolve(window.confirm(`${title}\n\n${message}`));
+  }
+  return new Promise((resolve) => {
+    Alert.alert(
+      title,
+      message,
+      [
+        { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+        { text: "Remove", style: "destructive", onPress: () => resolve(true) },
+      ],
+      { cancelable: true }
+    );
+  });
 }
 
 // ---------- Component ----------
@@ -277,6 +309,71 @@ export default function MedicationsScreen() {
   const formatDate = (iso: string | null) =>
     iso ? new Date(iso).toLocaleDateString() : "—";
 
+  // -------- Remove (delete) a prescription item (+ delete parent if now empty) --------
+  const handleRemoveItem = useCallback(async (item: PrescribedItem) => {
+    const ok = await confirmRemove(
+      "Remove medication",
+      "This will remove this medication from your prescriptions. Continue?"
+    );
+    if (!ok) return;
+
+    try {
+      // Optimistic UI
+      setItems((prev) => prev.filter((p) => p.id !== item.id));
+      seenItemIdsRef.current.delete(item.id);
+
+      // Get the parent prescription id BEFORE delete
+      const { data: pre, error: preErr } = await supabase
+        .from("prescription_items")
+        .select("prescription_id")
+        .eq("id", item.id)
+        .maybeSingle();
+      if (preErr) throw preErr;
+      const prescId = pre?.prescription_id;
+
+      // Delete the item
+      const { error: delErr } = await supabase
+        .from("prescription_items")
+        .delete()
+        .eq("id", item.id);
+      if (delErr) throw delErr;
+
+      // If we know the parent, check if it’s empty now
+      if (prescId) {
+        const { count, error: countErr } = await supabase
+          .from("prescription_items")
+          .select("id", { count: "exact", head: true })
+          .eq("prescription_id", prescId);
+        if (countErr) {
+          console.error("Count error:", countErr);
+          return;
+        }
+        if ((count ?? 0) === 0) {
+          // Delete empty prescription
+          const { error: prescDelErr } = await supabase
+            .from("prescriptions")
+            .delete()
+            .eq("id", prescId);
+          if (prescDelErr) {
+            console.warn(
+              "Could not delete empty prescription:",
+              prescDelErr.message
+            );
+          }
+        }
+      }
+    } catch (e: any) {
+      console.error("Remove failed:", e?.message ?? e);
+      // Rollback optimistic UI
+      setItems((prev) => [item, ...prev]);
+      seenItemIdsRef.current.add(item.id);
+      Alert.alert(
+        "Remove failed",
+        e?.message ?? "Could not remove medication."
+      );
+    }
+  }, []);
+
   const renderItem = ({ item }: { item: PrescribedItem }) => {
     const name =
       item.medication?.brand_name ||
@@ -414,18 +511,57 @@ export default function MedicationsScreen() {
       if (uErr || !u?.user?.id) throw new Error("Not signed in.");
       const uid = u.user.id;
 
+      // Ensure FK targets exist
       await ensurePatientProfile(uid);
-      await ensureAppUserRow(uid);
 
-      // Create prescription and return metadata we need to render immediately
+      // Try to find a linked doctor. If none, we will omit created_by
+      let doctorId: string | null = null;
+      try {
+        doctorId = await getLinkedDoctorId(uid);
+      } catch (e) {
+        // No doctor linked — that’s fine *if* your DB allows NULL created_by.
+        doctorId = null;
+      }
+
+      // Create prescription (conditionally include created_by)
+      const rxInsert: any = { patient_id: uid };
+      if (doctorId) rxInsert.created_by = doctorId;
+
       const { data: rx, error: rxErr } = await supabase
         .from("prescriptions")
-        .insert([{ patient_id: uid, created_by: uid }])
+        .insert([rxInsert])
         .select("id, prescribed_at, start_date, end_date, status")
         .single();
-      if (rxErr) throw rxErr;
 
-      // Insert the item and return its id + sig_text
+      if (rxErr) {
+        console.error("create prescription failed:", rxErr);
+        // Helpful hint if your column is still NOT NULL or FK to doctor_profiles:
+        if (
+          typeof rxErr.message === "string" &&
+          (rxErr.message.includes("null value in column \"created_by\"") ||
+            rxErr.message.includes("violates not-null constraint"))
+        ) {
+          Alert.alert(
+            "Doctor required",
+            "Your database requires a doctor to be linked. Link a doctor to your account or allow NULL created_by."
+          );
+          return;
+        }
+        if (
+          typeof rxErr.message === "string" &&
+          rxErr.message.includes("is not present in table \"doctor_profiles\"")
+        ) {
+          Alert.alert(
+            "Doctor link invalid",
+            "The doctor ID used for created_by must exist in doctor_profiles."
+          );
+          return;
+        }
+        Alert.alert("Error", rxErr.message ?? "Could not create prescription.");
+        return;
+      }
+
+      // Insert the item
       const { data: itemRow, error: itemErr } = await supabase
         .from("prescription_items")
         .insert([
@@ -437,7 +573,12 @@ export default function MedicationsScreen() {
         ])
         .select("id, sig_text")
         .single();
-      if (itemErr) throw itemErr;
+
+      if (itemErr) {
+        console.error("insert item failed:", itemErr);
+        Alert.alert("Error", itemErr.message ?? "Could not add medication item.");
+        return;
+      }
 
       // Fetch the medication row to render details
       const { data: medRow, error: medErr } = await supabase
@@ -445,7 +586,11 @@ export default function MedicationsScreen() {
         .select("id, generic_name, brand_name, form, strength_value, strength_unit")
         .eq("id", medId.trim())
         .single();
-      if (medErr) throw medErr;
+      if (medErr) {
+        console.error("fetch med failed:", medErr);
+        Alert.alert("Error", medErr.message ?? "Could not load medication details.");
+        return;
+      }
 
       // Build the prescribed item and prepend to list (optimistic UI)
       const newItem: PrescribedItem = {
@@ -475,6 +620,7 @@ export default function MedicationsScreen() {
       // Optional: toast
       Alert.alert("Added", "Medication added to your prescriptions.");
     } catch (e: any) {
+      console.error("handleAddMedication error:", e);
       Alert.alert("Error", e?.message ?? "Could not add medication.");
     }
   };
@@ -585,7 +731,13 @@ export default function MedicationsScreen() {
 
                     <View style={{ height: 220 }}>
                       {medLoading ? (
-                        <View style={{ alignItems: "center", justifyContent: "center", height: 220 }}>
+                        <View
+                          style={{
+                            alignItems: "center",
+                            justifyContent: "center",
+                            height: 220,
+                          }}
+                        >
                           <ThemedText>Loading…</ThemedText>
                         </View>
                       ) : (
@@ -594,7 +746,9 @@ export default function MedicationsScreen() {
                           keyExtractor={(o) => o.id}
                           keyboardShouldPersistTaps="handled"
                           ItemSeparatorComponent={() => (
-                            <View style={{ height: 1, backgroundColor: "#F1F5F9" }} />
+                            <View
+                              style={{ height: 1, backgroundColor: "#F1F5F9" }}
+                            />
                           )}
                           renderItem={({ item }) => (
                             <TouchableOpacity
@@ -603,13 +757,24 @@ export default function MedicationsScreen() {
                                 setMedId(item.id); // feeds existing add flow
                                 setPickerOpen(false);
                               }}
-                              style={{ paddingHorizontal: 12, paddingVertical: 12 }}
+                              style={{
+                                paddingHorizontal: 12,
+                                paddingVertical: 12,
+                              }}
                             >
-                              <ThemedText style={{ fontSize: 16, fontWeight: "600" }}>
+                              <ThemedText
+                                style={{ fontSize: 16, fontWeight: "600" }}
+                              >
                                 {item.label}
                               </ThemedText>
                               {!!item.sublabel && (
-                                <ThemedText style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>
+                                <ThemedText
+                                  style={{
+                                    fontSize: 12,
+                                    color: "#6B7280",
+                                    marginTop: 2,
+                                  }}
+                                >
                                   {item.sublabel}
                                 </ThemedText>
                               )}
@@ -704,7 +869,21 @@ const styles = StyleSheet.create({
   medicationDosage: { fontSize: 14, color: "#8E8E93" },
 
   statusPill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },
-  statusText: { color: "white", fontSize: 12, fontWeight: "700", textTransform: "capitalize" },
+  statusText: {
+    color: "white",
+    fontSize: 12,
+    fontWeight: "700",
+    textTransform: "capitalize",
+  },
+
+  trashBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#EF4444",
+  },
 
   sigText: { fontSize: 14, color: "#4B5563", fontStyle: "italic", marginBottom: 12 },
 
