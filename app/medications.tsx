@@ -50,7 +50,7 @@ type PrescribedItem = {
 
 type MedOption = {
   id: string;
-  label: string; // "Panadol (Paracetamol) 500 mg tablet"
+  label: string;     // "Panadol (Paracetamol) 500 mg tablet"
   sublabel?: string; // e.g., "ATC: N02BE01"
 };
 
@@ -62,13 +62,26 @@ async function ensurePatientProfile(uid: string) {
   if (error) throw error;
 }
 
-async function ensureAppUserRow(uid: string) {
-  const { data: u } = await supabase.auth.getUser();
-  const email = u?.user?.email ?? null;
-  const { error } = await supabase
-    .from("users")
-    .upsert({ id: uid, email }, { onConflict: "id" });
+/**
+ * Finds a doctor linked to this patient via doctor_patient.
+ * Returns the doctor_profiles.user_id or throws if none.
+ */
+async function getLinkedDoctorId(patientId: string): Promise<string> {
+  const { data, error } = await supabase
+    .from("doctor_patient")
+    .select("doctor_id")
+    .eq("patient_id", patientId)
+    .limit(1)
+    .maybeSingle();
+
   if (error) throw error;
+  const doctorId = data?.doctor_id as string | undefined;
+  if (!doctorId) {
+    throw new Error(
+      "No linked doctor found for this patient. Ask an admin to add a row in doctor_patient."
+    );
+  }
+  return doctorId;
 }
 
 async function confirmRemove(title: string, message: string): Promise<boolean> {
@@ -87,6 +100,7 @@ async function confirmRemove(title: string, message: string): Promise<boolean> {
     );
   });
 }
+
 // ---------- Component ----------
 export default function MedicationsScreen() {
   const colorScheme = useColorScheme();
@@ -102,9 +116,6 @@ export default function MedicationsScreen() {
   // -------- Add modal state --------
   const [showAdd, setShowAdd] = useState(false);
   const [medId, setMedId] = useState("");
-  {
-    /* name kept as "sig" to match your existing UI/state */
-  }
   const [sig, setSig] = useState("");
 
   // -------- Medication dropdown/search state --------
@@ -147,8 +158,7 @@ export default function MedicationsScreen() {
 
     const { data, error } = await supabase
       .from("prescriptions")
-      .select(
-        `
+      .select(`
         id,
         prescribed_at,
         start_date,
@@ -166,8 +176,7 @@ export default function MedicationsScreen() {
             strength_unit
           )
         )
-      `
-      )
+      `)
       .eq("patient_id", uid)
       .order("prescribed_at", { ascending: false });
 
@@ -322,7 +331,7 @@ export default function MedicationsScreen() {
       setItems((prev) => prev.filter((p) => p.id !== item.id));
       seenItemIdsRef.current.delete(item.id);
 
-      // Get the parent prescription id BEFORE delete (avoids RETURNING + RLS issues)
+      // Get the parent prescription id BEFORE delete
       const { data: pre, error: preErr } = await supabase
         .from("prescription_items")
         .select("prescription_id")
@@ -349,7 +358,7 @@ export default function MedicationsScreen() {
           return;
         }
         if ((count ?? 0) === 0) {
-          // Delete empty prescription (requires DELETE policy)
+          // Delete empty prescription
           const { error: prescDelErr } = await supabase
             .from("prescriptions")
             .delete()
@@ -531,18 +540,57 @@ export default function MedicationsScreen() {
       if (uErr || !u?.user?.id) throw new Error("Not signed in.");
       const uid = u.user.id;
 
+      // Ensure FK targets exist
       await ensurePatientProfile(uid);
-      await ensureAppUserRow(uid);
 
-      // Create prescription and return metadata we need to render immediately
+      // Try to find a linked doctor. If none, we will omit created_by
+      let doctorId: string | null = null;
+      try {
+        doctorId = await getLinkedDoctorId(uid);
+      } catch (e) {
+        // No doctor linked — that’s fine *if* your DB allows NULL created_by.
+        doctorId = null;
+      }
+
+      // Create prescription (conditionally include created_by)
+      const rxInsert: any = { patient_id: uid };
+      if (doctorId) rxInsert.created_by = doctorId;
+
       const { data: rx, error: rxErr } = await supabase
         .from("prescriptions")
-        .insert([{ patient_id: uid, created_by: uid }])
+        .insert([rxInsert])
         .select("id, prescribed_at, start_date, end_date, status")
         .single();
-      if (rxErr) throw rxErr;
 
-      // Insert the item and return its id + sig_text
+      if (rxErr) {
+        console.error("create prescription failed:", rxErr);
+        // Helpful hint if your column is still NOT NULL or FK to doctor_profiles:
+        if (
+          typeof rxErr.message === "string" &&
+          (rxErr.message.includes("null value in column \"created_by\"") ||
+            rxErr.message.includes("violates not-null constraint"))
+        ) {
+          Alert.alert(
+            "Doctor required",
+            "Your database requires a doctor to be linked. Link a doctor to your account or allow NULL created_by."
+          );
+          return;
+        }
+        if (
+          typeof rxErr.message === "string" &&
+          rxErr.message.includes("is not present in table \"doctor_profiles\"")
+        ) {
+          Alert.alert(
+            "Doctor link invalid",
+            "The doctor ID used for created_by must exist in doctor_profiles."
+          );
+          return;
+        }
+        Alert.alert("Error", rxErr.message ?? "Could not create prescription.");
+        return;
+      }
+
+      // Insert the item
       const { data: itemRow, error: itemErr } = await supabase
         .from("prescription_items")
         .insert([
@@ -554,7 +602,12 @@ export default function MedicationsScreen() {
         ])
         .select("id, sig_text")
         .single();
-      if (itemErr) throw itemErr;
+
+      if (itemErr) {
+        console.error("insert item failed:", itemErr);
+        Alert.alert("Error", itemErr.message ?? "Could not add medication item.");
+        return;
+      }
 
       // Fetch the medication row to render details
       const { data: medRow, error: medErr } = await supabase
@@ -564,7 +617,11 @@ export default function MedicationsScreen() {
         )
         .eq("id", medId.trim())
         .single();
-      if (medErr) throw medErr;
+      if (medErr) {
+        console.error("fetch med failed:", medErr);
+        Alert.alert("Error", medErr.message ?? "Could not load medication details.");
+        return;
+      }
 
       // Build the prescribed item and prepend to list (optimistic UI)
       const newItem: PrescribedItem = {
@@ -593,6 +650,7 @@ export default function MedicationsScreen() {
 
       Alert.alert("Added", "Medication added to your prescriptions.");
     } catch (e: any) {
+      console.error("handleAddMedication error:", e);
       Alert.alert("Error", e?.message ?? "Could not add medication.");
     }
   };
@@ -712,77 +770,77 @@ export default function MedicationsScreen() {
                     overflow: "hidden",
                   }}
                 >
-                  <View style={{ paddingHorizontal: 12, paddingVertical: 10 }}>
-                    <TextInput
-                      value={medSearch}
-                      onChangeText={setMedSearch}
-                      placeholder="Type to search by generic or brand name"
-                      style={{ fontSize: 16 }}
-                      autoCapitalize="none"
-                    />
-                  </View>
-
-                  <View style={{ height: 220 }}>
-                    {medLoading ? (
-                      <View
-                        style={{
-                          alignItems: "center",
-                          justifyContent: "center",
-                          height: 220,
-                        }}
-                      >
-                        <ThemedText>Loading…</ThemedText>
-                      </View>
-                    ) : (
-                      <FlatList
-                        data={medOptions}
-                        keyExtractor={(o) => o.id}
-                        keyboardShouldPersistTaps="handled"
-                        ItemSeparatorComponent={() => (
-                          <View
-                            style={{ height: 1, backgroundColor: "#F1F5F9" }}
-                          />
-                        )}
-                        renderItem={({ item }) => (
-                          <TouchableOpacity
-                            onPress={() => {
-                              setSelectedMed(item);
-                              setMedId(item.id); // feeds existing add flow
-                              setPickerOpen(false);
-                            }}
-                            style={{
-                              paddingHorizontal: 12,
-                              paddingVertical: 12,
-                            }}
-                          >
-                            <ThemedText
-                              style={{ fontSize: 16, fontWeight: "600" }}
-                            >
-                              {item.label}
-                            </ThemedText>
-                            {!!item.sublabel && (
-                              <ThemedText
-                                style={{
-                                  fontSize: 12,
-                                  color: "#6B7280",
-                                  marginTop: 2,
-                                }}
-                              >
-                                {item.sublabel}
-                              </ThemedText>
-                            )}
-                          </TouchableOpacity>
-                        )}
-                        ListEmptyComponent={
-                          <View style={{ padding: 16 }}>
-                            <ThemedText style={{ color: "#6B7280" }}>
-                              No medications found. Try a different search.
-                            </ThemedText>
-                          </View>
-                        }
+                    <View style={{ paddingHorizontal: 12, paddingVertical: 10 }}>
+                      <TextInput
+                        value={medSearch}
+                        onChangeText={setMedSearch}
+                        placeholder="Type to search by generic or brand name"
+                        style={{ fontSize: 16 }}
+                        autoCapitalize="none"
                       />
-                    )}
-                  </View>
+                    </View>
+
+                    <View style={{ height: 220 }}>
+                      {medLoading ? (
+                        <View
+                          style={{
+                            alignItems: "center",
+                            justifyContent: "center",
+                            height: 220,
+                          }}
+                        >
+                          <ThemedText>Loading…</ThemedText>
+                        </View>
+                      ) : (
+                        <FlatList
+                          data={medOptions}
+                          keyExtractor={(o) => o.id}
+                          keyboardShouldPersistTaps="handled"
+                          ItemSeparatorComponent={() => (
+                            <View
+                              style={{ height: 1, backgroundColor: "#F1F5F9" }}
+                            />
+                          )}
+                          renderItem={({ item }) => (
+                            <TouchableOpacity
+                              onPress={() => {
+                                setSelectedMed(item);
+                                setMedId(item.id); // feeds existing add flow
+                                setPickerOpen(false);
+                              }}
+                              style={{
+                                paddingHorizontal: 12,
+                                paddingVertical: 12,
+                              }}
+                            >
+                              <ThemedText
+                                style={{ fontSize: 16, fontWeight: "600" }}
+                              >
+                                {item.label}
+                              </ThemedText>
+                              {!!item.sublabel && (
+                                <ThemedText
+                                  style={{
+                                    fontSize: 12,
+                                    color: "#6B7280",
+                                    marginTop: 2,
+                                  }}
+                                >
+                                  {item.sublabel}
+                                </ThemedText>
+                              )}
+                            </TouchableOpacity>
+                          )}
+                          ListEmptyComponent={
+                            <View style={{ padding: 16 }}>
+                              <ThemedText style={{ color: "#6B7280" }}>
+                                No medications found. Try a different search.
+                              </ThemedText>
+                            </View>
+                          }
+                        />
+                      )}
+                    </View>
                 </View>
               )}
             </View>
@@ -884,7 +942,7 @@ const styles = StyleSheet.create({
     borderRadius: 15,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#EF4444", // red-500
+    backgroundColor: "#EF4444",
   },
 
   sigText: {
