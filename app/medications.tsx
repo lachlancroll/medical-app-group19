@@ -12,6 +12,7 @@ import {
   Alert,
   FlatList,
   Modal,
+  Platform,
   StyleSheet,
   TextInput,
   TouchableOpacity,

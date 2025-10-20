@@ -1,6 +1,6 @@
 // app/(auth)/signin.tsx (or wherever your SignInPage lives)
 import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Button,
@@ -10,6 +10,7 @@ import {
   View,
 } from "react-native";
 import { supabase } from "../supabaseClient";
+
 
 export default function SignInPage() {
   const router = useRouter();

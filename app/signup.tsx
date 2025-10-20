@@ -1,6 +1,6 @@
 // app/signup.tsx
 import { useRouter } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Button, // <-- add
@@ -12,6 +12,7 @@ import {
   View,
 } from "react-native";
 import { supabase } from "../supabaseClient";
+
 
 export default function SignUpPage() {
   const router = useRouter();
