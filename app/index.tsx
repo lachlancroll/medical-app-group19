@@ -59,20 +59,20 @@ function PatientHome({ user, router }: { user: any, router: any }) {
           icon={<MaterialCommunityIcons name="pill" size={30} />}
           onPress={() => router.push('/medications')}
         />
-        {/* <LargeActionButton
+        <LargeActionButton
           label="Appointments"
           icon={<Ionicons name="calendar" size={30} />}
           onPress={() => router.push('/appointments')}
-        /> */}
+        />
         <LargeActionButton
           label="AI Assistant"
           icon={<MaterialCommunityIcons name="robot-happy-outline" size={30} />}
           onPress={() => router.push('/assistant')}
         />
       </View>
-      {/* <View style={styles.calendarCard}>
+      <View style={styles.calendarCard}>
         <SimpleCalendar />
-      </View> */}
+      </View>
     </SafeAreaView>
   );
 }
@@ -108,6 +108,13 @@ function DoctorHome({ user, router }: { user: any, router: any }) {
     <SafeAreaView style={styles.container}>
       <Header router={router} />
       <View style={styles.actionsColumn}>
+
+        <LargeActionButton
+          label="Medications"
+          icon={<MaterialCommunityIcons name="pill" size={30} />}
+          onPress={() => router.push('/medications')}
+        />
+
         <LargeActionButton
           label="Patients List"
           icon={<MaterialCommunityIcons name="account-group-outline" size={30} />}
@@ -117,6 +124,12 @@ function DoctorHome({ user, router }: { user: any, router: any }) {
           label="Appointments"
           icon={<Ionicons name="calendar" size={30} />}
           onPress={() => router.push('/appointments')}
+        />
+
+        <LargeActionButton
+          label="AI Assistant"
+          icon={<MaterialCommunityIcons name="robot-happy-outline" size={30} />}
+          onPress={() => router.push('/assistant')}
         />
       </View>
       <View style={styles.calendarCard}>

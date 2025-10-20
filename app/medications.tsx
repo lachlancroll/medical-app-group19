@@ -395,19 +395,29 @@ export default function MedicationsScreen() {
             </ThemedText>
             {!!doseParts.length && (
               <ThemedText style={styles.medicationDosage}>
-                {doseParts.join(" ")}{" "}
-                {item.medication?.form ? `• ${item.medication.form}` : ""}
+                {doseParts.join(" ")} {item.medication?.form ? `• ${item.medication.form}` : ""}
               </ThemedText>
             )}
           </View>
 
-          <View
-            style={[
-              styles.statusPill,
-              { backgroundColor: item.status === "active" ? "#34C759" : "#CBD5E1" },
-            ]}
-          >
-            <ThemedText style={styles.statusText}>{item.status}</ThemedText>
+          {/* RIGHT SIDE: status + delete */}
+          <View style={styles.headerActions}>
+            <View
+              style={[
+                styles.statusPill,
+                { backgroundColor: item.status === "active" ? "#34C759" : "#CBD5E1" },
+              ]}
+            >
+              <ThemedText style={styles.statusText}>{item.status}</ThemedText>
+            </View>
+
+            <TouchableOpacity
+              accessibilityLabel="Remove medication"
+              onPress={() => handleRemoveItem(item)}
+              style={styles.trashBtn}
+            >
+              <Ionicons name="trash" size={16} color="white" />
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -417,21 +427,15 @@ export default function MedicationsScreen() {
 
         <View style={styles.rxMetaRow}>
           <ThemedText style={styles.rxMetaLabel}>Prescribed</ThemedText>
-          <ThemedText style={styles.rxMetaValue}>
-            {formatDate(item.prescribed_at)}
-          </ThemedText>
+          <ThemedText style={styles.rxMetaValue}>{formatDate(item.prescribed_at)}</ThemedText>
         </View>
         <View style={styles.rxMetaRow}>
           <ThemedText style={styles.rxMetaLabel}>Start</ThemedText>
-          <ThemedText style={styles.rxMetaValue}>
-            {formatDate(item.start_date)}
-          </ThemedText>
+          <ThemedText style={styles.rxMetaValue}>{formatDate(item.start_date)}</ThemedText>
         </View>
         <View style={styles.rxMetaRow}>
           <ThemedText style={styles.rxMetaLabel}>End</ThemedText>
-          <ThemedText style={styles.rxMetaValue}>
-            {formatDate(item.end_date)}
-          </ThemedText>
+          <ThemedText style={styles.rxMetaValue}>{formatDate(item.end_date)}</ThemedText>
         </View>
       </ThemedView>
     );
@@ -833,6 +837,7 @@ export default function MedicationsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, paddingTop: 60, paddingHorizontal: 20 },
+
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -865,6 +870,13 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     marginBottom: 12,
   },
+
+  headerActions: { 
+    flexDirection: "row", 
+    alignItems: "center", 
+    gap: 8 
+  },
+
   medicationInfo: { flex: 1 },
   medicationName: { fontSize: 18, fontWeight: "600", marginBottom: 4 },
   medicationDosage: { fontSize: 14, color: "#8E8E93" },
