@@ -11,8 +11,9 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
+import Logo from '../assets/group19logo.svg'; // from app/(auth)
 import { supabase } from '../supabaseClient'; // keep your path
 
 export default function SignInPage() {
@@ -63,7 +64,7 @@ export default function SignInPage() {
           {/* Logo / Brand */}
           <View style={styles.logoWrap}>
             <View style={styles.logoCircle}>
-              <Ionicons name="medkit-outline" size={28} color="#0ea5e9" />
+              <Logo width={70} height={70} />   {/* scales perfectly */}
             </View>
             <Text style={styles.brand}>PharmaConnect</Text>
           </View>
@@ -147,11 +148,12 @@ const styles = StyleSheet.create({
 
   logoWrap: { alignItems: 'center', marginBottom: 18 },
   logoCircle: {
-    width: 64, height: 64, borderRadius: 32,
+    width: 100, height: 100, borderRadius: 50,
     backgroundColor: '#ffffff',
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 10, elevation: 4,
   },
+  logo: { width: 40, height: 40 },
   brand: { color: '#ffffff', marginTop: 10, fontSize: 16, fontWeight: '700', letterSpacing: 0.3 },
 
   card: {
