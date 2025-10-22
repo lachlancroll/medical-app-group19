@@ -212,7 +212,7 @@ const styles = StyleSheet.create({
     fontSize: 24,
     textAlign: "center",
     marginBottom: 20,
-    color: "white",
+    color: "black",
   },
   input: {
     borderWidth: 1,
@@ -220,7 +220,7 @@ const styles = StyleSheet.create({
     padding: 10,
     marginBottom: 10,
     borderRadius: 8,
-    color: "white",
+    color: "black",
   },
   error: { color: "red", marginBottom: 10, textAlign: "center" },
   info: { color: "green", marginBottom: 10, textAlign: "center" },
@@ -228,12 +228,12 @@ const styles = StyleSheet.create({
     marginTop: 12,
     textAlign: "center",
     textDecorationLine: "underline",
-    color: "white",
+    color: "black",
   },
   row: {
     flexDirection: "row",
     alignItems: "center",
     marginBottom: 12,
-    color: "white",
+    color: "black",
   },
 });

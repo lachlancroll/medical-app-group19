@@ -127,9 +127,14 @@ export default function AppointmentsScreen() {
 
         const isDoctor  = !dr.error && !!dr.data;
         const isPatient = !pt.error && !!pt.data;
-        setRole(isDoctor && isPatient ? 'both' : isDoctor ? 'doctor' : isPatient ? 'patient' : 'none');
+        const newRole: UserRole = isDoctor && isPatient ? 'both' : isDoctor ? 'doctor' : isPatient ? 'patient' : 'none';
+        setRole(newRole);
 
-        await Promise.all([loadDoctorOptions(), loadPatientOptions()]);
+        // load pickers with explicit args to avoid state timing issues
+        await Promise.all([
+          loadDoctorOptions(u.id, newRole),
+          loadPatientOptions(),
+        ]);
       } catch (e) {
         console.error('init fatal:', e);
       } finally {
@@ -196,8 +201,30 @@ export default function AppointmentsScreen() {
   }, [user, role, fromDate, toDate]);
 
   /* -------------------------- pickers ----------------------------- */
-  async function loadDoctorOptions() {
+  async function loadDoctorOptions(currentUserId: string, currentRole: UserRole) {
     try {
+      // If the user is a patient (or both), only load doctors linked via doctor_patient
+      if (currentRole === 'patient' || currentRole === 'both') {
+        const linkRes = await supabase
+          .from('doctor_patient')
+          .select('doctor_id')
+          .eq('patient_id', currentUserId);
+        if (linkRes.error) {
+          console.error('doctor_patient lookup error:', linkRes.error);
+          setDoctors([]);
+          return;
+        }
+        const ids = Array.from(new Set((linkRes.data ?? []).map((r: any) => r.doctor_id as string))).filter(Boolean);
+        if (ids.length === 0) {
+          setDoctors([]);
+          return;
+        }
+        const nameById = await lookupNamesByIds(ids);
+        setDoctors(ids.map(id => ({ id, name: nameById[id] || shortId(id) || 'Doctor' })));
+        return;
+      }
+
+      // If the user is a doctor-only, just load all doctors (unchanged)
       const drRes = await supabase.from('doctor_profiles').select('user_id, provider_number');
       if (drRes.error) {
         console.error('doctor_profiles error:', drRes.error);
@@ -279,14 +306,36 @@ export default function AppointmentsScreen() {
 
     try {
       setCreating(true);
+
+      // ---- HARD GUARD: Patients can only book with linked doctors ----
+      // Applies when role is 'patient' OR 'both' while selecting a doctor.
+      if ((role === 'patient' || role === 'both') && user?.id && doctor_id) {
+        const linkCheck = await supabase
+          .from('doctor_patient')
+          .select('id', { count: 'exact', head: true })
+          .eq('patient_id', user.id)
+          .eq('doctor_id', doctor_id);
+        if (linkCheck.error) {
+          console.error('doctor_patient guard error:', linkCheck.error);
+          setCreateError('Could not verify doctor link. Please try again.');
+          setCreating(false);
+          return;
+        }
+        if ((linkCheck.count ?? 0) === 0) {
+          setCreateError('You can only book with doctors you are linked to.');
+          setCreating(false);
+          return;
+        }
+      }
+
       const createdBy =
         role === 'doctor'
           ? user!.id
           : role === 'patient'
-            ? selDoctor
+            ? doctor_id
             : selPatient
               ? user!.id
-              : selDoctor;
+              : doctor_id;
 
       if (!createdBy) {
         setCreateError('Please choose a doctor.');
@@ -314,7 +363,7 @@ export default function AppointmentsScreen() {
       setSelDoctor('');
       setSelPatient('');
       Alert.alert('Success', 'Appointment created.');
-      setFromDate(f => f);
+      setFromDate(f => f); // trigger refetch via dep
     } catch (e) {
       console.error('createAppointment fatal:', e);
       setCreateError('Unexpected error creating appointment.');
@@ -445,7 +494,7 @@ export default function AppointmentsScreen() {
             <ScrollView contentContainerStyle={{ paddingBottom: 8 }}>
               {(role === 'patient' || role === 'both') && (
                 <>
-                  <Text style={styles.inputLabel}>Doctor</Text>
+                  <Text style={styles.inputLabel}>Doctor (linked only)</Text>
                   <View style={styles.pillList}>
                     {doctors.map(d => (
                       <Pressable
@@ -458,7 +507,7 @@ export default function AppointmentsScreen() {
                         </Text>
                       </Pressable>
                     ))}
-                    {doctors.length === 0 && <Text style={styles.helpText}>No doctors found.</Text>}
+                    {doctors.length === 0 && <Text style={styles.helpText}>No linked doctors found.</Text>}
                   </View>
                 </>
               )}

@@ -101,6 +101,49 @@ async function confirmRemove(title: string, message: string): Promise<boolean> {
   });
 }
 
+// ---- NEW scheduling helpers ----
+function clampRangeMonths(n: number) {
+  if (!Number.isFinite(n)) return 1;
+  return Math.max(1, Math.min(12, Math.floor(n)));
+}
+
+function toISODate(d: Date) {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+/** Returns { startISO, endISO } where end <= start + 1 year and also <= start + rangeMonths */
+function computeDateRange(startISO: string, rangeMonths: number) {
+  const start = new Date(startISO + "T00:00:00");
+  if (isNaN(start.getTime())) throw new Error("Invalid start date");
+
+  // end by months
+  const endByMonths = new Date(start);
+  endByMonths.setMonth(endByMonths.getMonth() + clampRangeMonths(rangeMonths));
+
+  // end by 1 year cap
+  const endByYear = new Date(start);
+  endByYear.setFullYear(endByYear.getFullYear() + 1);
+
+  const end = endByMonths < endByYear ? endByMonths : endByYear;
+  return { startISO: toISODate(start), endISO: toISODate(end) };
+}
+
+/** Make a human tag to append to SIG (purely informational) */
+function recurrenceLabel(every: number, unit: "day" | "week", untilISO: string) {
+  const u =
+    unit === "day"
+      ? every === 1
+        ? "day"
+        : "days"
+      : every === 1
+      ? "week"
+      : "weeks";
+  return `Repeat: every ${every} ${u} until ${untilISO}`;
+}
+
 // ---------- Component ----------
 export default function MedicationsScreen() {
   const colorScheme = useColorScheme();
@@ -117,6 +160,18 @@ export default function MedicationsScreen() {
   const [showAdd, setShowAdd] = useState(false);
   const [medId, setMedId] = useState("");
   const [sig, setSig] = useState("");
+
+  // NEW: scheduling state
+  const [startDateStr, setStartDateStr] = useState<string>(() => {
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  });
+  const [repeatUnit, setRepeatUnit] = useState<"day" | "week">("week"); // "day" or "week"
+  const [repeatEvery, setRepeatEvery] = useState<number>(1); // 1 week or 2 days etc
+  const [rangeMonths, setRangeMonths] = useState<number>(3); // valid for N months (1..12)
 
   // -------- Medication dropdown/search state --------
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -521,7 +576,7 @@ export default function MedicationsScreen() {
     if (showAdd) fetchMedications("");
   }, [showAdd, fetchMedications]);
 
-  // -------- Add medication flow (optimistic prepend) --------
+  // -------- Add medication flow (with dates + recurrence) --------
   const handleAddMedication = async () => {
     try {
       if (!medId.trim()) {
@@ -536,6 +591,19 @@ export default function MedicationsScreen() {
         return;
       }
 
+      // validate date + range
+      let startISO = startDateStr.trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(startISO)) {
+        Alert.alert("Invalid start date", "Please use format YYYY-MM-DD.");
+        return;
+      }
+      const { startISO: startFinal, endISO } = computeDateRange(
+        startISO,
+        rangeMonths
+      );
+      const every = Math.max(1, Math.floor(repeatEvery));
+      const unit: "day" | "week" = repeatUnit;
+
       const { data: u, error: uErr } = await supabase.auth.getUser();
       if (uErr || !u?.user?.id) throw new Error("Not signed in.");
       const uid = u.user.id;
@@ -547,15 +615,18 @@ export default function MedicationsScreen() {
       let doctorId: string | null = null;
       try {
         doctorId = await getLinkedDoctorId(uid);
-      } catch (e) {
-        // No doctor linked — that’s fine *if* your DB allows NULL created_by.
-        doctorId = null;
+      } catch {
+        doctorId = null; // OK for demo if DB allows NULL
       }
 
-      // Create prescription (conditionally include created_by)
+      // Create prescription including start/end dates
       const rxInsert: any = {
         patient_id: uid,
-        created_by: doctorId ?? null
+        start_date: startFinal,
+        end_date: endISO,
+        created_by: doctorId ?? null,
+        // Optionally store notes:
+        // notes: recurrenceLabel(every, unit, endISO),
       };
 
       const { data: rx, error: rxErr } = await supabase
@@ -566,10 +637,9 @@ export default function MedicationsScreen() {
 
       if (rxErr) {
         console.error("create prescription failed:", rxErr);
-        // Helpful hint if your column is still NOT NULL or FK to doctor_profiles:
         if (
           typeof rxErr.message === "string" &&
-          (rxErr.message.includes("null value in column \"created_by\"") ||
+          (rxErr.message.includes('null value in column "created_by"') ||
             rxErr.message.includes("violates not-null constraint"))
         ) {
           Alert.alert(
@@ -580,7 +650,7 @@ export default function MedicationsScreen() {
         }
         if (
           typeof rxErr.message === "string" &&
-          rxErr.message.includes("is not present in table \"doctor_profiles\"")
+          rxErr.message.includes('is not present in table "doctor_profiles"')
         ) {
           Alert.alert(
             "Doctor link invalid",
@@ -592,14 +662,20 @@ export default function MedicationsScreen() {
         return;
       }
 
-      // Insert the item
+      // Insert the item; append recurrence tag to sig for visibility
+      const sigWithRecurrence = `${sig.trim()} (${recurrenceLabel(
+        every,
+        unit,
+        endISO
+      )})`;
+
       const { data: itemRow, error: itemErr } = await supabase
         .from("prescription_items")
         .insert([
           {
             prescription_id: rx.id,
             medication_id: medId.trim(),
-            sig_text: sig.trim(),
+            sig_text: sigWithRecurrence,
           },
         ])
         .select("id, sig_text")
@@ -644,11 +720,15 @@ export default function MedicationsScreen() {
         return next;
       });
 
-      // Reset UI
+      // Reset UI (keep scheduling prefs if you like)
       setShowAdd(false);
       setMedId("");
       setSelectedMed(null);
       setSig("");
+      // setStartDateStr(toISODate(new Date()));
+      // setRepeatUnit("week");
+      // setRepeatEvery(1);
+      // setRangeMonths(3);
 
       Alert.alert("Added", "Medication added to your prescriptions.");
     } catch (e: any) {
@@ -860,6 +940,79 @@ export default function MedicationsScreen() {
                 style={[styles.input, { minHeight: 90 }]}
               />
             </View>
+
+            {/* ---- Scheduling ---- */}
+            <View style={{ marginTop: 8 }}>
+              <ThemedText style={styles.inputLabel}>Start date</ThemedText>
+              <TextInput
+                value={startDateStr}
+                onChangeText={setStartDateStr}
+                placeholder="YYYY-MM-DD"
+                autoCapitalize="none"
+                keyboardType="numbers-and-punctuation"
+                style={styles.input}
+              />
+            </View>
+
+            <View style={{ marginTop: 8 }}>
+              <ThemedText style={styles.inputLabel}>Repeat</ThemedText>
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                {/* every X */}
+                <View style={{ flex: 1 }}>
+                  <TextInput
+                    value={String(repeatEvery)}
+                    onChangeText={(t) => {
+                      const n = parseInt(t || "1", 10);
+                      setRepeatEvery(isNaN(n) || n < 1 ? 1 : n);
+                    }}
+                    keyboardType="number-pad"
+                    style={styles.input}
+                    placeholder="Every"
+                  />
+                </View>
+
+                {/* unit */}
+                <View style={{ flex: 1, flexDirection: "row", gap: 8 }}>
+                  <TouchableOpacity
+                    onPress={() => setRepeatUnit("day")}
+                    style={[styles.chip, repeatUnit === "day" && styles.chipActive]}
+                  >
+                    <ThemedText
+                      style={repeatUnit === "day" ? styles.chipTextActive : styles.chipText}
+                    >
+                      Day(s)
+                    </ThemedText>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => setRepeatUnit("week")}
+                    style={[styles.chip, repeatUnit === "week" && styles.chipActive]}
+                  >
+                    <ThemedText
+                      style={repeatUnit === "week" ? styles.chipTextActive : styles.chipText}
+                    >
+                      Week(s)
+                    </ThemedText>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+
+            <View style={{ marginTop: 8 }}>
+              <ThemedText style={styles.inputLabel}>Valid for (months, max 12)</ThemedText>
+              <TextInput
+                value={String(rangeMonths)}
+                onChangeText={(t) => {
+                  const n = parseInt(t || "1", 10);
+                  setRangeMonths(clampRangeMonths(n));
+                }}
+                keyboardType="number-pad"
+                style={styles.input}
+                placeholder="e.g., 3"
+              />
+              <ThemedText style={{ marginTop: 6, color: "#6B7280" }}>
+                The end date will be capped to at most one year from the start date.
+              </ThemedText>
+            </View>
           </View>
 
           <View style={styles.modalFooter}>
@@ -1024,5 +1177,21 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   saveButtonText: { color: "white", fontSize: 16, fontWeight: "600" },
-});
 
+  // NEW chips for repeat unit
+  chip: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#E5E5EA",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  chipActive: {
+    backgroundColor: "#0EA5E9",
+    borderColor: "#0EA5E9",
+  },
+  chipText: { fontSize: 16, fontWeight: "600", color: "#111827" },
+  chipTextActive: { fontSize: 16, fontWeight: "700", color: "white" },
+});
