@@ -86,6 +86,14 @@ export default function AppointmentsScreen() {
   // small helper to format local HH:MM from a Date
   const localHhMm = (d: Date) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 
+  // Return "now" truncated to minutes (to avoid second/millisecond edge cases)
+  function nowFloorToMinute() {
+    const n = new Date();
+    n.setSeconds(0, 0);
+    return n;
+  }
+
+
   // convert "HH:MM" -> Date anchored to an arbitrary local day (used by native time pickers)
   const timeStringToDate = (t: string) => {
     const [hh = '0', mm = '0'] = (t || '').split(':');
@@ -150,7 +158,7 @@ export default function AppointmentsScreen() {
         if (dr.error) console.warn('doctor_profiles role check error:', dr.error);
         if (pt.error) console.warn('patient_profiles role check error:', pt.error);
 
-        const isDoctor  = !dr.error && !!dr.data;
+        const isDoctor = !dr.error && !!dr.data;
         const isPatient = !pt.error && !!pt.data;
         const newRole: UserRole = isDoctor && isPatient ? 'both' : isDoctor ? 'doctor' : isPatient ? 'patient' : 'none';
         setRole(newRole);
@@ -197,56 +205,56 @@ export default function AppointmentsScreen() {
         if (selectedTab === 'Current') {
           // current and future appointments (exclude cancelled)
           localTo = '2099-12-31';
-           // exclude cancelled current appointments
-           query = (query as any).neq('status', 'cancelled');
-         } else if (selectedTab === 'Previous') {
+          // exclude cancelled current appointments
+          query = (query as any).neq('status', 'cancelled');
+        } else if (selectedTab === 'Previous') {
           // previous tab will now be constrained to today..today (effectively empty for past-only),
           // but keep excluding cancelled to match previous behavior
           localTo = todayYmd;
-           // exclude cancelled previous appointments
-           query = (query as any).neq('status', 'cancelled');
-         } else if (selectedTab === 'Cancelled') {
+          // exclude cancelled previous appointments
+          query = (query as any).neq('status', 'cancelled');
+        } else if (selectedTab === 'Cancelled') {
           // cancelled appointments from today onwards
           localTo = '2099-12-31';
-           query = (query as any).eq('status', 'cancelled');
-         }
+          query = (query as any).eq('status', 'cancelled');
+        }
 
-         const toEnd = /^\d{4}-\d{2}-\d{2}$/.test(localTo) ? `${localTo}T23:59:59` : localTo;
-         query = query.gte('starts_at', localFrom).lte('starts_at', toEnd);
+        const toEnd = /^\d{4}-\d{2}-\d{2}$/.test(localTo) ? `${localTo}T23:59:59` : localTo;
+        query = query.gte('starts_at', localFrom).lte('starts_at', toEnd);
 
-         const { data, error, status, statusText } = await query;
-         if (error) {
-           console.error('appointments query error:', { error, status, statusText });
-           setAppointments([]);
-           return;
-         }
+        const { data, error, status, statusText } = await query;
+        if (error) {
+          console.error('appointments query error:', { error, status, statusText });
+          setAppointments([]);
+          return;
+        }
 
-         const rows = (data ?? []) as any[];
-         const doctorIds = Array.from(new Set(rows.map(r => r.doctor_id).filter(Boolean)));
-         const patientIds = Array.from(new Set(rows.map(r => r.patient_id).filter(Boolean)));
+        const rows = (data ?? []) as any[];
+        const doctorIds = Array.from(new Set(rows.map(r => r.doctor_id).filter(Boolean)));
+        const patientIds = Array.from(new Set(rows.map(r => r.patient_id).filter(Boolean)));
 
-         const [docNames, patNames] = await Promise.all([
-           lookupNamesByIds(doctorIds),
-           lookupNamesByIds(patientIds),
-         ]);
+        const [docNames, patNames] = await Promise.all([
+          lookupNamesByIds(doctorIds),
+          lookupNamesByIds(patientIds),
+        ]);
 
-         const merged: AppointmentRow[] = rows.map(r => ({
-           id: r.id,
-           starts_at: r.starts_at,
-           ends_at: r.ends_at,
-           status: r.status,
-           doctor_id: r.doctor_id,
-           patient_id: r.patient_id,
-           doctor_name: docNames[r.doctor_id] ?? shortId(r.doctor_id) ?? 'Doctor',
-           patient_name: patNames[r.patient_id] ?? shortId(r.patient_id) ?? 'Patient',
-         }));
+        const merged: AppointmentRow[] = rows.map(r => ({
+          id: r.id,
+          starts_at: r.starts_at,
+          ends_at: r.ends_at,
+          status: r.status,
+          doctor_id: r.doctor_id,
+          patient_id: r.patient_id,
+          doctor_name: docNames[r.doctor_id] ?? shortId(r.doctor_id) ?? 'Doctor',
+          patient_name: patNames[r.patient_id] ?? shortId(r.patient_id) ?? 'Patient',
+        }));
 
-         setAppointments(merged);
-       } catch (e) {
-         console.error('appointments fetch fatal:', e);
-       } finally {
-         setLoading(false);
-       }
+        setAppointments(merged);
+      } catch (e) {
+        console.error('appointments fetch fatal:', e);
+      } finally {
+        setLoading(false);
+      }
     };
     run();
   }, [user, role, fromDate, toDate, refreshKey, selectedTab]);
@@ -337,13 +345,17 @@ export default function AppointmentsScreen() {
       return setCreateError('Times must be HH:MM (24h).');
 
     const starts_at = `${dateStr}T${startStr}:00`;
-    const ends_at   = `${dateStr}T${endStr}:00`;
+    const ends_at = `${dateStr}T${endStr}:00`;
 
     const s = new Date(starts_at), e = new Date(ends_at);
     if (isNaN(+s) || isNaN(+e)) return setCreateError('Invalid date/time.');
     if (e <= s) return setCreateError('End time must be after start time.');
 
-    const doctor_id  = role === 'doctor' ? user!.id : selDoctor;
+    // 🚫 New: no booking in the past (local time, since your strings are local)
+    const now = nowFloorToMinute();
+    if (s < now) return setCreateError('Start time must be in the future.');
+
+    const doctor_id = role === 'doctor' ? user!.id : selDoctor;
     const patient_id = role === 'patient' ? user!.id : selPatient;
 
     try {
@@ -486,14 +498,14 @@ export default function AppointmentsScreen() {
         const s = new Date(a.starts_at);
         // use localYmd and local time extraction to avoid UTC shift
         setDateStr(!isNaN(+s) ? localYmd(s) : '');
-        setStartStr(!isNaN(+s) ? `${String(s.getHours()).padStart(2,'0')}:${String(s.getMinutes()).padStart(2,'0')}` : '09:00');
+        setStartStr(!isNaN(+s) ? `${String(s.getHours()).padStart(2, '0')}:${String(s.getMinutes()).padStart(2, '0')}` : '09:00');
       }
 
       if (endMatch) {
         setEndStr(endMatch[2]);
       } else {
         const e = new Date(a.ends_at);
-        setEndStr(!isNaN(+e) ? `${String(e.getHours()).padStart(2,'0')}:${String(e.getMinutes()).padStart(2,'0')}` : '09:30');
+        setEndStr(!isNaN(+e) ? `${String(e.getHours()).padStart(2, '0')}:${String(e.getMinutes()).padStart(2, '0')}` : '09:30');
       }
 
       setModalOpen(true);
@@ -511,9 +523,9 @@ export default function AppointmentsScreen() {
       const k = match
         ? match[1]
         : (() => {
-            try { return new Date(a.starts_at).toISOString().slice(0, 10); }
-            catch { return String(a.starts_at).slice(0, 10); }
-          })();
+          try { return new Date(a.starts_at).toISOString().slice(0, 10); }
+          catch { return String(a.starts_at).slice(0, 10); }
+        })();
       (byDay[k] ||= []).push(a);
     }
     return Object.entries(byDay)
@@ -526,7 +538,7 @@ export default function AppointmentsScreen() {
   /* ----------------------------- UI ------------------------------- */
   if (loading) {
     return (
-      <LinearGradient colors={['rgb(21, 210, 209)', 'rgb(22, 161, 157)']} start={{x:0,y:0}} end={{x:1,y:1}} style={{flex:1}}>
+      <LinearGradient colors={['rgb(21, 210, 209)', 'rgb(22, 161, 157)']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ flex: 1 }}>
         <SafeAreaView style={styles.container}>
           <ActivityIndicator color="#fff" />
         </SafeAreaView>
@@ -535,7 +547,7 @@ export default function AppointmentsScreen() {
   }
 
   return (
-    <LinearGradient colors={['rgb(21, 210, 209)', 'rgb(22, 161, 157)']} start={{x:0,y:0}} end={{x:1,y:1}} style={{flex:1}}>
+    <LinearGradient colors={['rgb(21, 210, 209)', 'rgb(22, 161, 157)']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ flex: 1 }}>
       <SafeAreaView style={styles.container}>
         {/* header */}
         <View style={styles.headerRow}>
@@ -587,37 +599,37 @@ export default function AppointmentsScreen() {
                 // intentionally no onPress: clicking the card should not navigate to a detail page
                 android_ripple={{ color: '#E2E8F0' }}
               >
-                 <View style={styles.cardRow}>
-                   <MaterialCommunityIcons name="calendar" size={28} color="#0EA5E9" />
-                   <View style={{ marginLeft: 12, flex: 1 }}>
-                     {/* primary counterpart (patient for doctors, doctor for patients) */}
-                     <Text style={styles.counterpartName}>
-                       {role === 'doctor' ? (item.patient_name ?? 'Patient') : (item.doctor_name ?? 'Doctor')}
-                     </Text>
-                     {/* show doctor's name when it's not already the primary counterpart */}
-                     {item.doctor_name && (role === 'doctor' || item.doctor_name !== (role === 'doctor' ? item.patient_name : item.doctor_name)) && (
-                       <Text style={styles.doctorText}>Dr. {item.doctor_name}</Text>
-                     )}
-                     {/* only show time range (HH:MM – HH:MM) */}
-                     <Text style={styles.timeText}>{formatTimeRange(item.starts_at, item.ends_at)}</Text>
-                   </View>
-                   <View style={{ alignItems: 'flex-end', gap: 8 }}>
-                     <StatusBadge status={item.status} />
-                     {/* action buttons visible only for people involved */}
-                     {user && (user.id === item.doctor_id || user.id === item.patient_id) && item.status !== 'cancelled' && (
-                       <View style={{ flexDirection: 'row', marginTop: 8 }}>
-                         <Pressable style={[styles.actionSmall, styles.actionSmallReschedule]} onPress={() => openReschedule(item)}>
-                           <Text style={[styles.actionSmallText, { color: '#fff' }]}>Reschedule</Text>
-                         </Pressable>
-                         <Pressable style={[styles.actionSmall, styles.actionSmallCancel]} onPress={() => cancelAppointment(item.id)}>
-                           <Text style={[styles.actionSmallText, { color: '#b91c1c' }]}>Cancel</Text>
-                         </Pressable>
-                       </View>
-                     )}
-                   </View>
-                 </View>
+                <View style={styles.cardRow}>
+                  <MaterialCommunityIcons name="calendar" size={28} color="#0EA5E9" />
+                  <View style={{ marginLeft: 12, flex: 1 }}>
+                    {/* primary counterpart (patient for doctors, doctor for patients) */}
+                    <Text style={styles.counterpartName}>
+                      {role === 'doctor' ? (item.patient_name ?? 'Patient') : (item.doctor_name ?? 'Doctor')}
+                    </Text>
+                    {/* show doctor's name when it's not already the primary counterpart */}
+                    {item.doctor_name && (role === 'doctor' || item.doctor_name !== (role === 'doctor' ? item.patient_name : item.doctor_name)) && (
+                      <Text style={styles.doctorText}>Dr. {item.doctor_name}</Text>
+                    )}
+                    {/* only show time range (HH:MM – HH:MM) */}
+                    <Text style={styles.timeText}>{formatTimeRange(item.starts_at, item.ends_at)}</Text>
+                  </View>
+                  <View style={{ alignItems: 'flex-end', gap: 8 }}>
+                    <StatusBadge status={item.status} />
+                    {/* action buttons visible only for people involved */}
+                    {user && (user.id === item.doctor_id || user.id === item.patient_id) && item.status !== 'cancelled' && (
+                      <View style={{ flexDirection: 'row', marginTop: 8 }}>
+                        <Pressable style={[styles.actionSmall, styles.actionSmallReschedule]} onPress={() => openReschedule(item)}>
+                          <Text style={[styles.actionSmallText, { color: '#fff' }]}>Reschedule</Text>
+                        </Pressable>
+                        <Pressable style={[styles.actionSmall, styles.actionSmallCancel]} onPress={() => cancelAppointment(item.id)}>
+                          <Text style={[styles.actionSmallText, { color: '#b91c1c' }]}>Cancel</Text>
+                        </Pressable>
+                      </View>
+                    )}
+                  </View>
+                </View>
               </Pressable>
-             )}
+            )}
           />
         </View>
 
@@ -732,27 +744,20 @@ export default function AppointmentsScreen() {
                 />
               ) : (
                 <>
-                  <Pressable 
-                    style={styles.dateButton} 
+                  <Pressable
+                    style={styles.dateButton}
                     onPress={() => setShowDatePicker(true)}
                   >
                     <Text style={styles.dateButtonText}>{dateStr || 'Select date...'}</Text>
                   </Pressable>
                   {showDatePicker && (
                     <DateTimePicker
-                      value={
-                        dateStr
-                          ? (() => {
-                              const p = dateStr.split('-').map((x) => Number(x));
-                              return new Date(p[0], (p[1] ?? 1) - 1, p[2] ?? 1);
-                            })()
-                          : new Date()
-                      }
-                      minimumDate={new Date()}
+                      value={dateStr ? new Date(dateStr) : new Date()}
                       mode="date"
+                      minimumDate={new Date()}        // 👈 new: blocks past dates in UI
                       onChange={(e, date) => {
                         setShowDatePicker(false);
-                        if (date) setDateStr(localYmd(date));
+                        if (date) setDateStr(date.toISOString().slice(0, 10));
                       }}
                     />
                   )}
@@ -772,8 +777,8 @@ export default function AppointmentsScreen() {
                     />
                   ) : (
                     <>
-                      <Pressable 
-                        style={styles.dateButton} 
+                      <Pressable
+                        style={styles.dateButton}
                         onPress={() => setShowStartPicker(true)}
                       >
                         <Text style={styles.dateButtonText}>{startStr || 'Select time...'}</Text>
@@ -809,8 +814,8 @@ export default function AppointmentsScreen() {
                     />
                   ) : (
                     <>
-                      <Pressable 
-                        style={styles.dateButton} 
+                      <Pressable
+                        style={styles.dateButton}
                         onPress={() => setShowEndPicker(true)}
                       >
                         <Text style={styles.dateButtonText}>{endStr || 'Select time...'}</Text>
@@ -880,12 +885,12 @@ const StatusBadge = ({ status }: { status: string }) => {
   const label = (status || '').toLowerCase();
   const bg =
     label === 'cancelled' ? '#fee2e2' :
-    label === 'completed' ? '#dcfce7' :
-    '#e0f2fe';
+      label === 'completed' ? '#dcfce7' :
+        '#e0f2fe';
   const fg =
     label === 'cancelled' ? '#b91c1c' :
-    label === 'completed' ? '#166534' :
-    '#0369a1';
+      label === 'completed' ? '#166534' :
+        '#0369a1';
   return (
     <View style={[styles.badge, { backgroundColor: bg }]}>
       <Text style={[styles.badgeText, { color: fg }]}>{capitalize(label || 'scheduled')}</Text>
