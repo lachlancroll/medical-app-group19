@@ -11,7 +11,6 @@ import {
   Modal,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   SectionList,
   StyleSheet,
@@ -19,6 +18,7 @@ import {
   TextInput,
   View
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from '../supabaseClient';
 
 type DBUser = { id: string; email: string | null };
@@ -82,6 +82,9 @@ export default function AppointmentsScreen() {
   // helper to format a Date to local YYYY-MM-DD (prevents toISOString UTC shift)
   const localYmd = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+  // small helper to format local HH:MM from a Date
+  const localHhMm = (d: Date) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 
   // compute today's local ymd once
   const todayYmd = localYmd(new Date());
@@ -521,15 +524,15 @@ export default function AppointmentsScreen() {
       } else {
         // fallback to Date-based extraction if the format is unexpected
         const s = new Date(a.starts_at);
-        setDateStr(!isNaN(+s) ? s.toISOString().slice(0, 10) : '');
-        setStartStr(!isNaN(+s) ? s.toISOString().slice(11, 16) : '09:00');
+        setDateStr(!isNaN(+s) ? localYmd(s) : '');
+        setStartStr(!isNaN(+s) ? localHhMm(s) : '09:00');
       }
 
       if (endMatch) {
         setEndStr(endMatch[2]);
       } else {
         const e = new Date(a.ends_at);
-        setEndStr(!isNaN(+e) ? e.toISOString().slice(11, 16) : '09:30');
+        setEndStr(!isNaN(+e) ? localHhMm(e) : '09:30');
       }
 
       setModalOpen(true);
@@ -788,7 +791,7 @@ export default function AppointmentsScreen() {
                       mode="date"
                       onChange={(e, date) => {
                         setShowDatePicker(false);
-                        if (date) setDateStr(date.toISOString().slice(0, 10));
+                        if (date) setDateStr(localYmd(date));
                       }}
                     />
                   )}
@@ -823,9 +826,7 @@ export default function AppointmentsScreen() {
                           onChange={(e, date) => {
                             setShowStartPicker(false);
                             if (date) {
-                              const hh = String(date.getHours()).padStart(2, '0');
-                              const mm = String(date.getMinutes()).padStart(2, '0');
-                              setStartStr(`${hh}:${mm}`);
+                              setStartStr(localHhMm(date));
                             }
                           }}
                         />
@@ -860,9 +861,7 @@ export default function AppointmentsScreen() {
                           onChange={(e, date) => {
                             setShowEndPicker(false);
                             if (date) {
-                              const hh = String(date.getHours()).padStart(2, '0');
-                              const mm = String(date.getMinutes()).padStart(2, '0');
-                              setEndStr(`${hh}:${mm}`);
+                              setEndStr(localHhMm(date));
                             }
                           }}
                         />
@@ -898,16 +897,16 @@ export default function AppointmentsScreen() {
     const start = new Date();
     const end = new Date();
     end.setDate(start.getDate() + n);
-    setFromDate(start.toISOString().slice(0, 10));
-    setToDate(end.toISOString().slice(0, 10));
+    setFromDate(localYmd(start));
+    setToDate(localYmd(end));
   }
 
   function setNextMonth() {
     const d = new Date();
     const start = new Date(d.getFullYear(), d.getMonth() + 1, 1);
     const end = new Date(d.getFullYear(), d.getMonth() + 2, 0);
-    setFromDate(start.toISOString().slice(0, 10));
-    setToDate(end.toISOString().slice(0, 10));
+    setFromDate(localYmd(start));
+    setToDate(localYmd(end));
   }
 }
 
