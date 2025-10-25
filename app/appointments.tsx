@@ -1,5 +1,7 @@
 // app/appointments/index.tsx
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import { Picker } from '@react-native-picker/picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
@@ -69,6 +71,11 @@ export default function AppointmentsScreen() {
   // editing/reschedule state
   const [editingId, setEditingId] = useState<string | null>(null);
 
+  // picker visibility states
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showStartPicker, setShowStartPicker] = useState(false);
+  const [showEndPicker, setShowEndPicker] = useState(false);
+
   /* ------------------- helpers (web URL params) ------------------- */
   const updateUrlParams = (from: string, to: string) => {
     if (!isWeb || typeof window === 'undefined') return;
@@ -86,17 +93,9 @@ export default function AppointmentsScreen() {
 
   const defaultDates = () => {
     const today = new Date();
-    const plusMonth = new Date(today);
-    plusMonth.setMonth(today.getMonth() + 1);
-    let from = today.toISOString().slice(0, 10);
-    let to   = plusMonth.toISOString().slice(0, 10);
-    if (isWeb && typeof window !== 'undefined') {
-      try {
-        const params = new URLSearchParams(window.location.search);
-        from = params.get('from') ?? from;
-        to   = params.get('to')   ?? to;
-      } catch {}
-    }
+    today.setHours(0, 0, 0, 0); // start of today
+    const from = today.toISOString().slice(0, 10);
+    const to = '2099-12-31'; // far future date
     return { from, to };
   };
 
@@ -536,32 +535,13 @@ export default function AppointmentsScreen() {
         <View style={styles.surface}>
           {/* quick filters */}
           <View style={styles.quickRow}>
-            <FilterChip label="7 days" onPress={() => setRangeDays(7)} />
-            <FilterChip label="30 days" onPress={() => setRangeDays(30)} />
-            <FilterChip label="All next month" onPress={() => setNextMonth()} />
+            <FilterChip label="Next 7 days" onPress={() => setRangeDays(7)} />
+            <FilterChip label="Next 30 days" onPress={() => setRangeDays(30)} />
+            <FilterChip label="Next month" onPress={() => setNextMonth()} />
           </View>
 
-          {/* Date inputs */}
-          <View style={styles.filterRow}>
-            <Text style={styles.filterLabel}>From</Text>
-            <TextInput
-              style={styles.filterInput}
-              value={fromDate}
-              onChangeText={(val) => { setFromDate(val); updateUrlParams(val, toDate); }}
-              placeholder="YYYY-MM-DD"
-              autoCapitalize="none"
-              maxLength={10}
-            />
-            <Text style={[styles.filterLabel, { marginLeft: 12 }]}>To</Text>
-            <TextInput
-              style={styles.filterInput}
-              value={toDate}
-              onChangeText={(val) => { setToDate(val); updateUrlParams(fromDate, val); }}
-              placeholder="YYYY-MM-DD"
-              autoCapitalize="none"
-              maxLength={10}
-            />
-          </View>
+          {/* Hide date range inputs but keep structure for spacing */}
+          <View style={{ height: 12 }} />
 
           {/* list */}
           <SectionList
@@ -632,74 +612,166 @@ export default function AppointmentsScreen() {
               {(role === 'patient' || role === 'both') && (
                 <>
                   <Text style={styles.inputLabel}>Doctor (linked only)</Text>
-                  <View style={styles.pillList}>
-                    {doctors.map(d => (
-                      <Pressable
-                        key={d.id}
-                        onPress={() => setSelDoctor(d.id)}
-                        style={[styles.pill, selDoctor === d.id && styles.pillSelected]}
+                  {isWeb ? (
+                    <View style={styles.pillList}>
+                      {doctors.map(d => (
+                        <Pressable
+                          key={d.id}
+                          onPress={() => setSelDoctor(d.id)}
+                          style={[styles.pill, selDoctor === d.id && styles.pillSelected]}
+                        >
+                          <Text style={[styles.pillText, selDoctor === d.id && styles.pillTextSelected]}>
+                            {d.name}
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  ) : (
+                    <View style={styles.pickerContainer}>
+                      <Picker
+                        selectedValue={selDoctor}
+                        onValueChange={value => setSelDoctor(value)}
+                        style={styles.picker}
                       >
-                        <Text style={[styles.pillText, selDoctor === d.id && styles.pillTextSelected]}>
-                          {d.name}
-                        </Text>
-                      </Pressable>
-                    ))}
-                    {doctors.length === 0 && <Text style={styles.helpText}>No linked doctors found.</Text>}
-                  </View>
+                        {doctors.map(d => (
+                          <Picker.Item key={d.id} label={d.name} value={d.id} />
+                        ))}
+                      </Picker>
+                    </View>
+                  )}
+                  {doctors.length === 0 && <Text style={styles.helpText}>No linked doctors found.</Text>}
                 </>
               )}
 
               {(role === 'doctor' || role === 'both') && (
                 <>
                   <Text style={styles.inputLabel}>Patient</Text>
-                  <View style={[styles.pillList, { maxHeight: 120 }]}>
-                    <ScrollView horizontal contentContainerStyle={{ paddingVertical: 6 }}>
-                      {patients.map(p => (
-                        <Pressable
-                          key={p.id}
-                          onPress={() => setSelPatient(p.id)}
-                          style={[styles.pill, selPatient === p.id && styles.pillSelected]}
-                        >
-                          <Text style={[styles.pillText, selPatient === p.id && styles.pillTextSelected]}>
-                            {p.name}
-                          </Text>
-                        </Pressable>
-                      ))}
-                    </ScrollView>
-                    {patients.length === 0 && <Text style={styles.helpText}>No patients found.</Text>}
-                  </View>
+                  {isWeb ? (
+                    <View style={[styles.pillList, { maxHeight: 120 }]}>
+                      <ScrollView horizontal contentContainerStyle={{ paddingVertical: 6 }}>
+                        {patients.map(p => (
+                          <Pressable
+                            key={p.id}
+                            onPress={() => setSelPatient(p.id)}
+                            style={[styles.pill, selPatient === p.id && styles.pillSelected]}
+                          >
+                            <Text style={[styles.pillText, selPatient === p.id && styles.pillTextSelected]}>
+                              {p.name}
+                            </Text>
+                          </Pressable>
+                        ))}
+                      </ScrollView>
+                    </View>
+                  ) : (
+                    <View style={styles.pickerContainer}>
+                      <Picker
+                        selectedValue={selPatient}
+                        onValueChange={value => setSelPatient(value)}
+                        style={styles.picker}
+                      >
+                        <Picker.Item label="Select a patient..." value="" />
+                        {patients.map(p => (
+                          <Picker.Item key={p.id} label={p.name} value={p.id} />
+                        ))}
+                      </Picker>
+                    </View>
+                  )}
+                  {patients.length === 0 && <Text style={styles.helpText}>No patients found.</Text>}
                 </>
               )}
 
-              <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
-              <TextInput
-                style={styles.textInput}
-                value={dateStr}
-                onChangeText={setDateStr}
-                placeholder="2025-10-12"
-                autoCapitalize="none"
-              />
+              <Text style={styles.inputLabel}>Date</Text>
+              {isWeb ? (
+                <TextInput
+                  style={styles.textInput}
+                  value={dateStr}
+                  onChangeText={setDateStr}
+                  placeholder="YYYY-MM-DD"
+                  autoCapitalize="none"
+                />
+              ) : (
+                <>
+                  <Pressable 
+                    style={styles.dateButton} 
+                    onPress={() => setShowDatePicker(true)}
+                  >
+                    <Text style={styles.dateButtonText}>{dateStr || 'Select date...'}</Text>
+                  </Pressable>
+                  {showDatePicker && (
+                    <DateTimePicker
+                      value={dateStr ? new Date(dateStr) : new Date()}
+                      mode="date"
+                      onChange={(e, date) => {
+                        setShowDatePicker(false);
+                        if (date) setDateStr(date.toISOString().slice(0, 10));
+                      }}
+                    />
+                  )}
+                </>
+              )}
 
               <View style={{ flexDirection: 'row', gap: 12, marginTop: 8 }}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.inputLabel}>Start (HH:MM)</Text>
-                  <TextInput
-                    style={styles.textInput}
-                    value={startStr}
-                    onChangeText={setStartStr}
-                    placeholder="09:00"
-                    autoCapitalize="none"
-                  />
+                  <Text style={styles.inputLabel}>Start Time</Text>
+                  {isWeb ? (
+                    <TextInput
+                      style={styles.textInput}
+                      value={startStr}
+                      onChangeText={setStartStr}
+                      placeholder="09:00"
+                      autoCapitalize="none"
+                    />
+                  ) : (
+                    <>
+                      <Pressable 
+                        style={styles.dateButton} 
+                        onPress={() => setShowStartPicker(true)}
+                      >
+                        <Text style={styles.dateButtonText}>{startStr || 'Select time...'}</Text>
+                      </Pressable>
+                      {showStartPicker && (
+                        <DateTimePicker
+                          value={startStr ? new Date(`2000-01-01T${startStr}`) : new Date().setHours(9, 0, 0, 0)}
+                          mode="time"
+                          onChange={(e, date) => {
+                            setShowStartPicker(false);
+                            if (date) setStartStr(date.toTimeString().slice(0, 5));
+                          }}
+                        />
+                      )}
+                    </>
+                  )}
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.inputLabel}>End (HH:MM)</Text>
-                  <TextInput
-                    style={styles.textInput}
-                    value={endStr}
-                    onChangeText={setEndStr}
-                    placeholder="09:30"
-                    autoCapitalize="none"
-                  />
+                  <Text style={styles.inputLabel}>End Time</Text>
+                  {isWeb ? (
+                    <TextInput
+                      style={styles.textInput}
+                      value={endStr}
+                      onChangeText={setEndStr}
+                      placeholder="09:30"
+                      autoCapitalize="none"
+                    />
+                  ) : (
+                    <>
+                      <Pressable 
+                        style={styles.dateButton} 
+                        onPress={() => setShowEndPicker(true)}
+                      >
+                        <Text style={styles.dateButtonText}>{endStr || 'Select time...'}</Text>
+                      </Pressable>
+                      {showEndPicker && (
+                        <DateTimePicker
+                          value={endStr ? new Date(`2000-01-01T${endStr}`) : new Date().setHours(9, 30, 0, 0)}
+                          mode="time"
+                          onChange={(e, date) => {
+                            setShowEndPicker(false);
+                            if (date) setEndStr(date.toTimeString().slice(0, 5));
+                          }}
+                        />
+                      )}
+                    </>
+                  )}
                 </View>
               </View>
 
@@ -731,15 +803,14 @@ export default function AppointmentsScreen() {
     end.setDate(start.getDate() + n);
     setFromDate(start.toISOString().slice(0, 10));
     setToDate(end.toISOString().slice(0, 10));
-    updateUrlParams(start.toISOString().slice(0, 10), end.toISOString().slice(0, 10));
   }
+
   function setNextMonth() {
     const d = new Date();
     const start = new Date(d.getFullYear(), d.getMonth() + 1, 1);
     const end = new Date(d.getFullYear(), d.getMonth() + 2, 0);
     setFromDate(start.toISOString().slice(0, 10));
     setToDate(end.toISOString().slice(0, 10));
-    updateUrlParams(start.toISOString().slice(0, 10), end.toISOString().slice(0, 10));
   }
 }
 
@@ -898,5 +969,29 @@ const styles = StyleSheet.create({
     shadowColor: '#000',
     shadowOpacity: 0.15,
     shadowRadius: 8,
+  },
+
+  pickerContainer: {
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 8,
+    backgroundColor: '#F8FAFC',
+    marginVertical: 4,
+  },
+  picker: {
+    height: 50,
+  },
+  dateButton: {
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 8,
+    backgroundColor: '#F8FAFC',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginVertical: 4,
+  },
+  dateButtonText: {
+    fontSize: 15,
+    color: '#0F172A',
   },
 });
