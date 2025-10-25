@@ -86,16 +86,16 @@ export default function AppointmentsScreen() {
   // small helper to format local HH:MM from a Date
   const localHhMm = (d: Date) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 
-  // compute today's local ymd once
-  const todayYmd = localYmd(new Date());
-
-  // helper: convert "HH:MM" -> Date anchored to arbitrary day (local)
+  // convert "HH:MM" -> Date anchored to an arbitrary local day (used by native time pickers)
   const timeStringToDate = (t: string) => {
     const [hh = '0', mm = '0'] = (t || '').split(':');
     const H = Number(hh || 0);
     const M = Number(mm || 0);
     return new Date(2000, 0, 1, H, M, 0, 0);
   };
+
+  // compute today's local ymd once
+  const todayYmd = localYmd(new Date());
 
   /* ------------------- helpers (web URL params) ------------------- */
   const updateUrlParams = (from: string, to: string) => {
@@ -113,10 +113,10 @@ export default function AppointmentsScreen() {
   };
 
   const defaultDates = () => {
+    // use localYmd to avoid UTC offset causing "yesterday"
     const today = new Date();
-    today.setHours(0, 0, 0, 0); // start of today
-    const from = today.toISOString().slice(0, 10);
-    const to = '2099-12-31'; // far future date
+    const from = localYmd(today);
+    const to = '2099-12-31';
     return { from, to };
   };
 
@@ -155,9 +155,9 @@ export default function AppointmentsScreen() {
         const newRole: UserRole = isDoctor && isPatient ? 'both' : isDoctor ? 'doctor' : isPatient ? 'patient' : 'none';
         setRole(newRole);
 
-        // Load pickers (now: ALL doctors; all patients stays the same)
+        // load pickers with explicit args to avoid state timing issues
         await Promise.all([
-          loadDoctorOptions(),
+          loadDoctorOptions(u.id, newRole),
           loadPatientOptions(),
         ]);
       } catch (e) {
@@ -173,40 +173,41 @@ export default function AppointmentsScreen() {
   useEffect(() => {
     const run = async () => {
       if (!user || role === 'none') return;
-       setLoading(true);
+      setLoading(true);
 
-       try {
+      try {
         let query = supabase
           .from('appointments')
           .select('id, starts_at, ends_at, status, doctor_id, patient_id')
           .order('starts_at', { ascending: true });
 
-         if (role === 'doctor') query = query.eq('doctor_id', user.id);
-         else if (role === 'patient') query = query.eq('patient_id', user.id);
-         else query = query.or(`doctor_id.eq.${user.id},patient_id.eq.${user.id}`);
+        if (role === 'doctor') query = query.eq('doctor_id', user.id);
+        else if (role === 'patient') query = query.eq('patient_id', user.id);
+        else query = query.or(`doctor_id.eq.${user.id},patient_id.eq.${user.id}`);
 
-         // compute date bounds / status filter based on selected tab
-         const today = new Date();
-         today.setHours(0, 0, 0);
-         const todayYmd = today.toISOString().slice(0, 10);
+        // compute date bounds / status filter based on selected tab
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayYmd = today.toISOString().slice(0, 10);
 
-         let localFrom = fromDate;
-         let localTo = toDate;
-         if (selectedTab === 'Current') {
-           localFrom = todayYmd;
-           localTo = '2099-12-31';
+        // Force lower bound to today so any appointment before current date is filtered out
+        let localFrom = todayYmd;
+        let localTo = toDate;
+
+        if (selectedTab === 'Current') {
+          // current and future appointments (exclude cancelled)
+          localTo = '2099-12-31';
            // exclude cancelled current appointments
            query = (query as any).neq('status', 'cancelled');
          } else if (selectedTab === 'Previous') {
-           localFrom = '1970-01-01';
-           const y = new Date();
-           y.setDate(y.getDate() - 1);
-           localTo = y.toISOString().slice(0, 10);
+          // previous tab will now be constrained to today..today (effectively empty for past-only),
+          // but keep excluding cancelled to match previous behavior
+          localTo = todayYmd;
            // exclude cancelled previous appointments
            query = (query as any).neq('status', 'cancelled');
          } else if (selectedTab === 'Cancelled') {
-           localFrom = '1970-01-01';
-           localTo = '2099-12-31';
+          // cancelled appointments from today onwards
+          localTo = '2099-12-31';
            query = (query as any).eq('status', 'cancelled');
          }
 
@@ -246,14 +247,14 @@ export default function AppointmentsScreen() {
        } finally {
          setLoading(false);
        }
-     };
+    };
     run();
   }, [user, role, fromDate, toDate, refreshKey, selectedTab]);
 
   /* -------------------------- pickers ----------------------------- */
-  async function loadDoctorOptions() {
+  async function loadDoctorOptions(/* currentUserId: string, currentRole: UserRole */) {
     try {
-      // NEW: always load ALL doctors for booking (no doctor_patient filtering)
+      // Always load all doctors for the picker (patients may see and choose any doctor)
       const drRes = await supabase.from('doctor_profiles').select('user_id, provider_number');
       if (drRes.error) {
         console.error('doctor_profiles error:', drRes.error);
@@ -320,6 +321,18 @@ export default function AppointmentsScreen() {
     if (role === 'doctor' && !selPatient) return setCreateError('Please select a patient.');
     if (role === 'patient' && !selDoctor) return setCreateError('Please select a doctor.');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return setCreateError('Date must be YYYY-MM-DD.');
+
+    // disallow booking/rescheduling for any date before today
+    // parse dateStr as a local date (avoid timezone/UTC shifts)
+    const parts = dateStr.split('-').map((n) => Number(n));
+    if (parts.length !== 3) return setCreateError('Invalid date.');
+    const selectedDate = new Date(parts[0], parts[1] - 1, parts[2]);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (selectedDate < today) {
+      return setCreateError('Cannot book an appointment before today.');
+    }
+
     if (!/^\d{2}:\d{2}$/.test(startStr) || !/^\d{2}:\d{2}$/.test(endStr))
       return setCreateError('Times must be HH:MM (24h).');
 
@@ -352,7 +365,7 @@ export default function AppointmentsScreen() {
         }
       }
 
-      // REMOVED: linked-doctor guard — patients may book with ANY doctor now
+      // NOTE: patients are allowed to book any doctor (no linked-doctor guard)
 
       const createdBy =
         role === 'doctor'
@@ -469,16 +482,18 @@ export default function AppointmentsScreen() {
         setDateStr(startMatch[1]);
         setStartStr(startMatch[2]);
       } else {
+        // fallback to Date-based extraction if the format is unexpected
         const s = new Date(a.starts_at);
+        // use localYmd and local time extraction to avoid UTC shift
         setDateStr(!isNaN(+s) ? localYmd(s) : '');
-        setStartStr(!isNaN(+s) ? localHhMm(s) : '09:00');
+        setStartStr(!isNaN(+s) ? `${String(s.getHours()).padStart(2,'0')}:${String(s.getMinutes()).padStart(2,'0')}` : '09:00');
       }
 
       if (endMatch) {
         setEndStr(endMatch[2]);
       } else {
         const e = new Date(a.ends_at);
-        setEndStr(!isNaN(+e) ? localHhMm(e) : '09:30');
+        setEndStr(!isNaN(+e) ? `${String(e.getHours()).padStart(2,'0')}:${String(e.getMinutes()).padStart(2,'0')}` : '09:30');
       }
 
       setModalOpen(true);
@@ -541,7 +556,7 @@ export default function AppointmentsScreen() {
           {/* tabs: Current | Previous | Cancelled */}
           <View style={styles.tabsRow}>
             <Pressable onPress={() => setSelectedTab('Current')} style={[styles.tab, selectedTab === 'Current' && styles.tabSelected]}>
-              <Text style={[styles.tabText, selectedTab === 'Current' && styles.tabTextSelected]}>Current</Text>
+              <Text style={[styles.tabText, selectedTab === 'Current' && styles.tabTextSelected]}>All</Text>
             </Pressable>
             <Pressable onPress={() => setSelectedTab('Previous')} style={[styles.tab, selectedTab === 'Previous' && styles.tabSelected]}>
               <Text style={[styles.tabText, selectedTab === 'Previous' && styles.tabTextSelected]}>Previous</Text>
@@ -569,21 +584,26 @@ export default function AppointmentsScreen() {
             renderItem={({ item }) => (
               <Pressable
                 style={styles.card}
+                // intentionally no onPress: clicking the card should not navigate to a detail page
                 android_ripple={{ color: '#E2E8F0' }}
               >
                  <View style={styles.cardRow}>
                    <MaterialCommunityIcons name="calendar" size={28} color="#0EA5E9" />
                    <View style={{ marginLeft: 12, flex: 1 }}>
+                     {/* primary counterpart (patient for doctors, doctor for patients) */}
                      <Text style={styles.counterpartName}>
                        {role === 'doctor' ? (item.patient_name ?? 'Patient') : (item.doctor_name ?? 'Doctor')}
                      </Text>
+                     {/* show doctor's name when it's not already the primary counterpart */}
                      {item.doctor_name && (role === 'doctor' || item.doctor_name !== (role === 'doctor' ? item.patient_name : item.doctor_name)) && (
                        <Text style={styles.doctorText}>Dr. {item.doctor_name}</Text>
                      )}
+                     {/* only show time range (HH:MM – HH:MM) */}
                      <Text style={styles.timeText}>{formatTimeRange(item.starts_at, item.ends_at)}</Text>
                    </View>
                    <View style={{ alignItems: 'flex-end', gap: 8 }}>
                      <StatusBadge status={item.status} />
+                     {/* action buttons visible only for people involved */}
                      {user && (user.id === item.doctor_id || user.id === item.patient_id) && item.status !== 'cancelled' && (
                        <View style={{ flexDirection: 'row', marginTop: 8 }}>
                          <Pressable style={[styles.actionSmall, styles.actionSmallReschedule]} onPress={() => openReschedule(item)}>
@@ -603,7 +623,20 @@ export default function AppointmentsScreen() {
 
         {/* FAB */}
         {canCreate && (
-          <Pressable style={styles.fab} onPress={() => setModalOpen(true)}>
+          <Pressable
+            style={styles.fab}
+            onPress={() => {
+              // open modal prefilled to today's local date & default times
+              setEditingId(null);
+              setDateStr(todayYmd);
+              setStartStr('09:00');
+              setEndStr('09:30');
+              setCreateError('');
+              setSelDoctor('');
+              setSelPatient('');
+              setModalOpen(true);
+            }}
+          >
             <MaterialCommunityIcons name="plus" size={26} color="#fff" />
           </Pressable>
         )}
@@ -639,7 +672,8 @@ export default function AppointmentsScreen() {
                         onValueChange={value => setSelDoctor(value)}
                         style={styles.picker}
                       >
-                        <Picker.Item label="Select a doctor..." value="" />
+                        {/* placeholder shown as default (muted color). keep selectable but value "" indicates no selection */}
+                        <Picker.Item label="Select a doctor..." value="" color="#64748B" />
                         {doctors.map(d => (
                           <Picker.Item key={d.id} label={d.name} value={d.id} />
                         ))}
@@ -706,7 +740,15 @@ export default function AppointmentsScreen() {
                   </Pressable>
                   {showDatePicker && (
                     <DateTimePicker
-                      value={dateStr ? new Date(dateStr) : new Date()}
+                      value={
+                        dateStr
+                          ? (() => {
+                              const p = dateStr.split('-').map((x) => Number(x));
+                              return new Date(p[0], (p[1] ?? 1) - 1, p[2] ?? 1);
+                            })()
+                          : new Date()
+                      }
+                      minimumDate={new Date()}
                       mode="date"
                       onChange={(e, date) => {
                         setShowDatePicker(false);
@@ -738,12 +780,16 @@ export default function AppointmentsScreen() {
                       </Pressable>
                       {showStartPicker && (
                         <DateTimePicker
-                          value={startStr ? new Date(`2000-01-01T${startStr}`) : new Date(new Date().setHours(9, 0, 0, 0))}
+                          value={startStr ? timeStringToDate(startStr) : timeStringToDate('09:00')}
                           mode="time"
+                          display="spinner"
+                          is24Hour={true}
                           onChange={(e, date) => {
                             setShowStartPicker(false);
                             if (date) {
-                              setStartStr(localHhMm(date));
+                              const hh = String(date.getHours()).padStart(2, '0');
+                              const mm = String(date.getMinutes()).padStart(2, '0');
+                              setStartStr(`${hh}:${mm}`);
                             }
                           }}
                         />
@@ -771,12 +817,16 @@ export default function AppointmentsScreen() {
                       </Pressable>
                       {showEndPicker && (
                         <DateTimePicker
-                          value={endStr ? new Date(`2000-01-01T${endStr}`) : new Date(new Date().setHours(9, 30, 0, 0))}
+                          value={endStr ? timeStringToDate(endStr) : timeStringToDate('09:30')}
                           mode="time"
+                          display="spinner"
+                          is24Hour={true}
                           onChange={(e, date) => {
                             setShowEndPicker(false);
                             if (date) {
-                              setEndStr(localHhMm(date));
+                              const hh = String(date.getHours()).padStart(2, '0');
+                              const mm = String(date.getMinutes()).padStart(2, '0');
+                              setEndStr(`${hh}:${mm}`);
                             }
                           }}
                         />
