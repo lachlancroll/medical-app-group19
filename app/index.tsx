@@ -64,9 +64,11 @@ function PatientHome({ router }: { user?: any; router: any }) {
   const [rxDates, setRxDates] = useState<string[]>([]);
   const [rxByDate, setRxByDate] = useState<Record<string, string[]>>({});
   const [apptDates, setApptDates] = useState<string[]>([]);
+  // add cancelled dates state
+  const [cancelledApptDates, setCancelledApptDates] = useState<string[]>([]);
   // store appointments as objects so we can include doctor name:
   const [apptByDate, setApptByDate] = useState<
-    Record<string, { timeLabel: string; doctorName: string }[]>
+    Record<string, { timeLabel: string; doctorName: string; status?: string }[]>
   >({});
 
   // Day details modal
@@ -220,17 +222,19 @@ function PatientHome({ router }: { user?: any; router: any }) {
         setRxDates(Array.from(rxDatesSet));
         setRxByDate(rxMap);
 
-        // Appointments (only this month for patient)
+        // Appointments (only this month for patient) - include status
         const { data: appts, error: apErr } = await supabase
           .from("appointments")
-          .select("starts_at, ends_at, doctor_id")
+          .select("starts_at, ends_at, doctor_id, status")
           .eq("patient_id", user.id)
           .gte("starts_at", `${monthStartISO}T00:00:00`)
           .lte("starts_at", `${monthEndISO}T23:59:59`);
         if (apErr) throw apErr;
 
-        const aDates: string[] = [];
-        const aMap: Record<string, { timeLabel: string; doctorName: string }[]> =
+        // use sets to avoid duplicates and to separate cancelled dates
+        const confirmedSet = new Set<string>();
+        const cancelledSet = new Set<string>();
+        const aMap: Record<string, { timeLabel: string; doctorName: string; status?: string }[]> =
           {};
 
         // gather doctor ids to fetch names
@@ -249,7 +253,12 @@ function PatientHome({ router }: { user?: any; router: any }) {
 
         (appts || []).forEach((a: any) => {
           const iso = a.starts_at.slice(0, 10);
-          aDates.push(iso);
+          const status = (a.status || "").toLowerCase();
+          if (status === "cancelled" || status === "canceled") {
+            cancelledSet.add(iso);
+          } else {
+            confirmedSet.add(iso);
+          }
           if (!aMap[iso]) aMap[iso] = [];
           const t = new Date(a.starts_at);
           const hh = String(t.getHours()).padStart(2, "0");
@@ -258,12 +267,14 @@ function PatientHome({ router }: { user?: any; router: any }) {
           const docName =
             doctor?.full_name || doctor?.email || a.doctor_id || "Assigned";
           aMap[iso].push({
-            timeLabel: `Appointment @ ${hh}:${mm}`,
+            timeLabel: `Appointment at ${hh}:${mm}`,
             doctorName: docName,
+            status: status || "confirmed",
           });
         });
 
-        setApptDates(aDates);
+        setApptDates(Array.from(confirmedSet));
+        setCancelledApptDates(Array.from(cancelledSet));
         setApptByDate(aMap);
       } catch (e) {
         console.error("init patient home", e);
@@ -369,6 +380,7 @@ function PatientHome({ router }: { user?: any; router: any }) {
             <View style={styles.calendarCard}>
               <SimpleCalendar
                 highlightDates={apptDates}          // yellow pills (appointments)
+                cancelledDates={cancelledApptDates} // red pills (cancelled)
                 prescriptionDates={rxDates}         // green rings (RX)
                 onDatePress={handleDatePress}       // open day popup
               />
@@ -441,90 +453,98 @@ function PatientHome({ router }: { user?: any; router: any }) {
       </Modal>
 
       {/* ---- Day details popup ---- */}
-      {/* ---- Day details popup ---- */}
-<Modal visible={dayModalOpen} transparent animationType="fade">
-  <View style={styles.modalBackdrop}>
-    <View style={[styles.modalCard, { maxHeight: "80%" }]}>
-      <Text style={styles.modalTitle}>
-        {dayModalDate
-          ? new Date(dayModalDate + "T00:00:00").toDateString()
-          : "Day"}
-      </Text>
+      <Modal visible={dayModalOpen} transparent animationType="fade">
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { maxHeight: "80%" }]}>
+            <Text style={styles.modalTitle}>
+              {dayModalDate
+                ? new Date(dayModalDate + "T00:00:00").toDateString()
+                : "Day"}
+            </Text>
 
-      {emptyDay ? (
-        <Text style={{ textAlign: "center", color: "#64748B", marginTop: 10 }}>
-          No appointments or prescriptions
-        </Text>
-      ) : (
-        <View style={{ gap: 16, marginTop: 8 }}>
-          {dayAppts.length > 0 && (
-            <View>
-              <Text style={styles.sectionHeading}>Appointments</Text>
-              {dayAppts.map((t, i) => (
-                <View key={i} style={styles.apptCard}>
-                  <View style={styles.apptRow}>
-                    <Ionicons
-                      name="time-outline"
-                      size={18}
-                      color="#2563eb"
-                      style={{ marginRight: 6 }}
-                    />
-                    <Text style={styles.apptTime}>
-                      {typeof t === "string" ? t : t.timeLabel}
-                    </Text>
+            {emptyDay ? (
+              <Text style={{ textAlign: "center", color: "#64748B", marginTop: 10 }}>
+                No appointments or prescriptions
+              </Text>
+            ) : (
+              <View style={{ gap: 16, marginTop: 8 }}>
+                {dayAppts.length > 0 && (
+                  <View>
+                    <Text style={styles.sectionHeading}>Appointments</Text>
+                    {dayAppts.map((t, i) => (
+                      <View key={i} style={styles.apptCard}>
+                        <View style={styles.apptRow}>
+                          <Ionicons
+                            name="time-outline"
+                            size={18}
+                            color="#2563eb"
+                            style={{ marginRight: 6 }}
+                          />
+                          <Text style={styles.apptTime}>
+                            {typeof t === "string" ? t : t.timeLabel}
+                          </Text>
+                        </View>
+                        <View style={styles.apptRow}>
+                          <Ionicons
+                            name="person-outline"
+                            size={18}
+                            color="#2563eb"
+                            style={{ marginRight: 6 }}
+                          />
+                          <Text style={styles.apptDoctor}>
+                            Doctor: {typeof t === "string" ? "Assigned" : t.doctorName}
+                          </Text>
+                        </View>
+                        <View style={styles.apptRow}>
+                          <Ionicons
+                            name={ (typeof t !== "string" && (t.status === "cancelled" || t.status === "canceled")) ? "close-circle-outline" : "checkmark-circle-outline"}
+                            size={18}
+                            color={ (typeof t !== "string" && (t.status === "cancelled" || t.status === "canceled")) ? "#ef4444" : "#16a34a"}
+                            style={{ marginRight: 6 }}
+                          />
+                          <Text style={[
+                            styles.apptStatus,
+                            (typeof t !== "string" && (t.status === "cancelled" || t.status === "canceled")) && styles.apptStatusCancelled
+                          ]}>
+                            {`Status: ${
+                              typeof t === "string"
+                                ? "Confirmed"
+                                : (t.status ? (t.status.charAt(0).toUpperCase() + t.status.slice(1)) : "Confirmed")
+                            }`}
+                          </Text>
+                        </View>
+                      </View>
+                    ))}
                   </View>
-                  <View style={styles.apptRow}>
-                    <Ionicons
-                      name="person-outline"
-                      size={18}
-                      color="#2563eb"
-                      style={{ marginRight: 6 }}
-                    />
-                    <Text style={styles.apptDoctor}>
-                      Doctor: {typeof t === "string" ? "Assigned" : t.doctorName}
-                    </Text>
+                )}
+                {dayRx.length > 0 && (
+                  <View>
+                    <Text style={styles.sectionHeading}>Prescriptions</Text>
+                    {dayRx.map((s, i) => (
+                      <View key={i} style={styles.rxCard}>
+                        <Ionicons
+                          name="medical-outline"
+                          size={18}
+                          color="#0f766e"
+                          style={{ marginRight: 6 }}
+                        />
+                        <Text style={styles.itemRow}>{s || "Prescription"}</Text>
+                      </View>
+                    ))}
                   </View>
-                  <View style={styles.apptRow}>
-                    <Ionicons
-                      name="checkmark-circle-outline"
-                      size={18}
-                      color="#16a34a"
-                      style={{ marginRight: 6 }}
-                    />
-                    <Text style={styles.apptStatus}>Status: Confirmed</Text>
-                  </View>
-                </View>
-              ))}
-            </View>
-          )}
-          {dayRx.length > 0 && (
-            <View>
-              <Text style={styles.sectionHeading}>Prescriptions</Text>
-              {dayRx.map((s, i) => (
-                <View key={i} style={styles.rxCard}>
-                  <Ionicons
-                    name="medical-outline"
-                    size={18}
-                    color="#0f766e"
-                    style={{ marginRight: 6 }}
-                  />
-                  <Text style={styles.itemRow}>{s || "Prescription"}</Text>
-                </View>
-              ))}
-            </View>
-          )}
+                )}
+              </View>
+            )}
+
+            <TouchableOpacity
+              onPress={() => setDayModalOpen(false)}
+              style={{ alignSelf: "center", marginTop: 14 }}
+            >
+              <Text style={{ color: "#2563eb", fontWeight: "700" }}>Close</Text>
+            </TouchableOpacity>
+          </View>
         </View>
-      )}
-
-      <TouchableOpacity
-        onPress={() => setDayModalOpen(false)}
-        style={{ alignSelf: "center", marginTop: 14 }}
-      >
-        <Text style={{ color: "#2563eb", fontWeight: "700" }}>Close</Text>
-      </TouchableOpacity>
-    </View>
-  </View>
-</Modal>
+      </Modal>
 
     </LinearGradient>
   );
@@ -534,23 +554,33 @@ function PatientHome({ router }: { user?: any; router: any }) {
 /*  DOCTOR HOME                                                               */
 /* -------------------------------------------------------------------------- */
 function DoctorHome({ user, router }: { user: any; router: any }) {
-  const [appointments, setAppointments] = useState<{ starts_at: string }[]>(
+  const [appointments, setAppointments] = useState<{ starts_at: string; status?: string }[]>(
     []
   );
   const [loadingAppointments, setLoadingAppointments] = useState(true);
+  // add cancelled dates state
+  const [cancelledDates, setCancelledDates] = useState<string[]>([]);
 
   useEffect(() => {
     const fetchAppointments = async () => {
       setLoadingAppointments(true);
       const { data, error } = await supabase
         .from("appointments")
-        .select("starts_at")
+        .select("starts_at, status")
         .eq("doctor_id", user.id);
       if (error) {
         console.error("Error fetching appointments:", error);
         setAppointments([]);
       } else {
         setAppointments(data || []);
+        // compute cancelled dates for doctor calendar
+        const cSet = new Set<string>();
+        (data || []).forEach((a: any) => {
+          if ((a.status || "").toLowerCase() === "cancelled" || (a.status || "").toLowerCase() === "canceled") {
+            cSet.add(a.starts_at.slice(0,10));
+          }
+        });
+        setCancelledDates(Array.from(cSet));
       }
       setLoadingAppointments(false);
     };
@@ -558,7 +588,7 @@ function DoctorHome({ user, router }: { user: any; router: any }) {
   }, [user.id]);
 
   const appointmentDates = useMemo(
-    () => appointments.map((a) => a.starts_at.slice(0, 10)),
+    () => appointments.filter(a => (a.status || "").toLowerCase() !== "cancelled" && (a.status || "").toLowerCase() !== "canceled").map((a) => a.starts_at.slice(0, 10)),
     [appointments]
   );
 
@@ -600,6 +630,7 @@ function DoctorHome({ user, router }: { user: any; router: any }) {
               ) : (
                 <SimpleCalendar
                   highlightDates={appointmentDates}
+                  cancelledDates={cancelledDates}
                   onDatePress={(dateStr: string) => {
                     router.push(`/appointments?from=${dateStr}&to=${dateStr}`);
                   }}
@@ -669,10 +700,12 @@ function LargeActionButton({
 function SimpleCalendar({
   highlightDates = [],
   prescriptionDates = [],
+  cancelledDates = [],
   onDatePress,
 }: {
   highlightDates?: string[];
   prescriptionDates?: string[];
+  cancelledDates?: string[];
   onDatePress?: (dateStr: string) => void;
 }) {
   const today = new Date();
@@ -749,6 +782,7 @@ function SimpleCalendar({
                 const todayCell = isToday(c.day);
                 const hl = isHighlighted(c.day);
                 const rx = isRx(c.day);
+                const cancelled = cancelledDates.includes(dateStr);
                 return (
                   <Pressable
                     key={ci}
@@ -756,7 +790,11 @@ function SimpleCalendar({
                     onPress={onDatePress ? () => onDatePress(dateStr) : undefined}
                   >
                     <RxRing active={rx}>
-                      {todayCell ? (
+                      {cancelled ? (
+                        <View style={styles.cancelledPill}>
+                          <Text style={styles.cancelledText}>{c.day}</Text>
+                        </View>
+                      ) : todayCell ? (
                         <View style={styles.todayPill}>
                           <Text style={styles.todayText}>{c.day}</Text>
                         </View>
@@ -965,6 +1003,9 @@ const styles = StyleSheet.create({
     color: "#16a34a",
     fontWeight: "600",
   },
+  apptStatusCancelled: {
+    color: "#ef4444",
+  },
   rxCard: {
     flexDirection: "row",
     alignItems: "center",
@@ -993,5 +1034,16 @@ const styles = StyleSheet.create({
   // Day modal list
   sectionHeading: { fontWeight: "800", marginBottom: 6, color: "#0f172a" },
   itemRow: { color: "#334155", marginBottom: 4 },
+
+  cancelledPill: {
+    minWidth: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ef4444",
+    paddingHorizontal: 8,
+  },
+  cancelledText: { color: "#fff", fontWeight: "800", fontSize: 16 },
 });
 

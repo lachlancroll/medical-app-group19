@@ -1,5 +1,7 @@
 // app/appointments/index.tsx
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import { Picker } from '@react-native-picker/picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
@@ -66,6 +68,17 @@ export default function AppointmentsScreen() {
 
   const [refreshKey, setRefreshKey] = useState(0);
 
+  // tab state: "Current" | "Previous" | "Cancelled"
+  const [selectedTab, setSelectedTab] = useState<'Current' | 'Previous' | 'Cancelled'>('Current');
+
+  // editing/reschedule state
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  // picker visibility states
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showStartPicker, setShowStartPicker] = useState(false);
+  const [showEndPicker, setShowEndPicker] = useState(false);
+
   /* ------------------- helpers (web URL params) ------------------- */
   const updateUrlParams = (from: string, to: string) => {
     if (!isWeb || typeof window === 'undefined') return;
@@ -83,17 +96,9 @@ export default function AppointmentsScreen() {
 
   const defaultDates = () => {
     const today = new Date();
-    const plusMonth = new Date(today);
-    plusMonth.setMonth(today.getMonth() + 1);
-    let from = today.toISOString().slice(0, 10);
-    let to   = plusMonth.toISOString().slice(0, 10);
-    if (isWeb && typeof window !== 'undefined') {
-      try {
-        const params = new URLSearchParams(window.location.search);
-        from = params.get('from') ?? from;
-        to   = params.get('to')   ?? to;
-      } catch {}
-    }
+    today.setHours(0, 0, 0, 0); // start of today
+    const from = today.toISOString().slice(0, 10);
+    const to = '2099-12-31'; // far future date
     return { from, to };
   };
 
@@ -149,58 +154,83 @@ export default function AppointmentsScreen() {
   /* ---------------- fetch appointments for this user -------------- */
   useEffect(() => {
     const run = async () => {
-      if (!user || role === 'none' || !fromDate || !toDate) return;
-      setLoading(true);
+      if (!user || role === 'none') return;
+       setLoading(true);
 
-      try {
+       try {
         let query = supabase
           .from('appointments')
           .select('id, starts_at, ends_at, status, doctor_id, patient_id')
           .order('starts_at', { ascending: true });
 
-        if (role === 'doctor') query = query.eq('doctor_id', user.id);
-        else if (role === 'patient') query = query.eq('patient_id', user.id);
-        else query = query.or(`doctor_id.eq.${user.id},patient_id.eq.${user.id}`);
+         if (role === 'doctor') query = query.eq('doctor_id', user.id);
+         else if (role === 'patient') query = query.eq('patient_id', user.id);
+         else query = query.or(`doctor_id.eq.${user.id},patient_id.eq.${user.id}`);
 
-        const toEnd = /^\d{4}-\d{2}-\d{2}$/.test(toDate) ? `${toDate}T23:59:59` : toDate;
-        query = query.gte('starts_at', fromDate).lte('starts_at', toEnd);
+         // compute date bounds / status filter based on selected tab
+         const today = new Date();
+         today.setHours(0, 0, 0);
+         const todayYmd = today.toISOString().slice(0, 10);
 
-        const { data, error, status, statusText } = await query;
-        if (error) {
-          console.error('appointments query error:', { error, status, statusText });
-          setAppointments([]);
-          return;
-        }
+         let localFrom = fromDate;
+         let localTo = toDate;
+         if (selectedTab === 'Current') {
+           localFrom = todayYmd;
+           localTo = '2099-12-31';
+           // exclude cancelled current appointments
+           query = (query as any).neq('status', 'cancelled');
+         } else if (selectedTab === 'Previous') {
+           localFrom = '1970-01-01';
+           const y = new Date();
+           y.setDate(y.getDate() - 1);
+           localTo = y.toISOString().slice(0, 10);
+           // exclude cancelled previous appointments
+           query = (query as any).neq('status', 'cancelled');
+         } else if (selectedTab === 'Cancelled') {
+           localFrom = '1970-01-01';
+           localTo = '2099-12-31';
+           query = (query as any).eq('status', 'cancelled');
+         }
 
-        const rows = (data ?? []) as any[];
-        const doctorIds = Array.from(new Set(rows.map(r => r.doctor_id).filter(Boolean)));
-        const patientIds = Array.from(new Set(rows.map(r => r.patient_id).filter(Boolean)));
+         const toEnd = /^\d{4}-\d{2}-\d{2}$/.test(localTo) ? `${localTo}T23:59:59` : localTo;
+         query = query.gte('starts_at', localFrom).lte('starts_at', toEnd);
 
-        const [docNames, patNames] = await Promise.all([
-          lookupNamesByIds(doctorIds),
-          lookupNamesByIds(patientIds),
-        ]);
+         const { data, error, status, statusText } = await query;
+         if (error) {
+           console.error('appointments query error:', { error, status, statusText });
+           setAppointments([]);
+           return;
+         }
 
-        const merged: AppointmentRow[] = rows.map(r => ({
-          id: r.id,
-          starts_at: r.starts_at,
-          ends_at: r.ends_at,
-          status: r.status,
-          doctor_id: r.doctor_id,
-          patient_id: r.patient_id,
-          doctor_name: docNames[r.doctor_id] ?? shortId(r.doctor_id) ?? 'Doctor',
-          patient_name: patNames[r.patient_id] ?? shortId(r.patient_id) ?? 'Patient',
-        }));
+         const rows = (data ?? []) as any[];
+         const doctorIds = Array.from(new Set(rows.map(r => r.doctor_id).filter(Boolean)));
+         const patientIds = Array.from(new Set(rows.map(r => r.patient_id).filter(Boolean)));
 
-        setAppointments(merged);
-      } catch (e) {
-        console.error('appointments fetch fatal:', e);
-      } finally {
-        setLoading(false);
-      }
-    };
+         const [docNames, patNames] = await Promise.all([
+           lookupNamesByIds(doctorIds),
+           lookupNamesByIds(patientIds),
+         ]);
+
+         const merged: AppointmentRow[] = rows.map(r => ({
+           id: r.id,
+           starts_at: r.starts_at,
+           ends_at: r.ends_at,
+           status: r.status,
+           doctor_id: r.doctor_id,
+           patient_id: r.patient_id,
+           doctor_name: docNames[r.doctor_id] ?? shortId(r.doctor_id) ?? 'Doctor',
+           patient_name: patNames[r.patient_id] ?? shortId(r.patient_id) ?? 'Patient',
+         }));
+
+         setAppointments(merged);
+       } catch (e) {
+         console.error('appointments fetch fatal:', e);
+       } finally {
+         setLoading(false);
+       }
+     };
     run();
-  }, [user, role, fromDate, toDate, refreshKey]);
+  }, [user, role, fromDate, toDate, refreshKey, selectedTab]);
 
   /* -------------------------- pickers ----------------------------- */
   async function loadDoctorOptions(currentUserId: string, currentRole: UserRole) {
@@ -309,6 +339,22 @@ export default function AppointmentsScreen() {
     try {
       setCreating(true);
 
+      // permission guard for reschedule/edit: ensure current user is part of appointment
+      if (editingId) {
+        const appt = appointments.find(a => a.id === editingId);
+        if (!appt) {
+          setCreateError('Original appointment not found.');
+          setCreating(false);
+          return;
+        }
+        const allowed = user && (user.id === appt.doctor_id || user.id === appt.patient_id);
+        if (!allowed) {
+          setCreateError('You are not allowed to reschedule this appointment.');
+          setCreating(false);
+          return;
+        }
+      }
+
       // ---- HARD GUARD: Patients can only book with linked doctors ----
       // Applies when role is 'patient' OR 'both' while selecting a doctor.
       if ((role === 'patient' || role === 'both') && user?.id && doctor_id) {
@@ -345,26 +391,46 @@ export default function AppointmentsScreen() {
         return;
       }
 
-      const { error, status, statusText } = await supabase
-        .from('appointments')
-        .insert([{
-          starts_at,
-          ends_at,
-          doctor_id,
-          patient_id,
-          status: 'scheduled',
-          created_by: createdBy,
-        }]);
+      if (editingId) {
+        // update / reschedule existing appointment
+        const { error, status, statusText } = await supabase
+          .from('appointments')
+          .update({
+            starts_at,
+            ends_at,
+            doctor_id,
+            patient_id,
+            status: 'rescheduled',
+          })
+          .eq('id', editingId);
+        if (error) {
+          console.error('update appointment error:', { error, status, statusText });
+          setCreateError(error.message || 'Failed to update appointment.');
+          return;
+        }
+      } else {
+        const { error, status, statusText } = await supabase
+          .from('appointments')
+          .insert([{
+            starts_at,
+            ends_at,
+            doctor_id,
+            patient_id,
+            status: 'scheduled',
+            created_by: createdBy,
+          }]);
 
-      if (error) {
-        console.error('create appointment error:', { error, status, statusText });
-        setCreateError(error.message || 'Failed to create appointment.');
-        return;
+        if (error) {
+          console.error('create appointment error:', { error, status, statusText });
+          setCreateError(error.message || 'Failed to create appointment.');
+          return;
+        }
       }
       setModalOpen(false);
       setSelDoctor('');
       setSelPatient('');
-      Alert.alert('Success', 'Appointment created.');
+      setEditingId(null);
+      Alert.alert('Success', editingId ? 'Appointment rescheduled.' : 'Appointment created.');
       setRefreshKey(k => k + 1); // trigger refetch via dep
     } catch (e) {
       console.error('createAppointment fatal:', e);
@@ -374,11 +440,88 @@ export default function AppointmentsScreen() {
     }
   };
 
+  /* ---------------------- cancel / reschedule --------------------- */
+  const cancelAppointment = async (id: string) => {
+    const appt = appointments.find(a => a.id === id);
+    if (!appt) {
+      Alert.alert('Error', 'Appointment not found.');
+      return;
+    }
+    const allowed = user && (user.id === appt.doctor_id || user.id === appt.patient_id);
+    if (!allowed) {
+      Alert.alert('Not allowed', 'You are not allowed to cancel this appointment.');
+      return;
+    }
+    Alert.alert('Confirm', 'Cancel this appointment?', [
+      { text: 'No', style: 'cancel' },
+      {
+        text: 'Yes',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            const { error } = await supabase.from('appointments').update({ status: 'cancelled' }).eq('id', id);
+            if (error) {
+              console.error('cancel error:', error);
+              Alert.alert('Error', 'Failed to cancel.');
+              return;
+            }
+            setRefreshKey(k => k + 1);
+            Alert.alert('Cancelled', 'Appointment has been cancelled.');
+          } catch (e) {
+            console.error('cancel fatal:', e);
+            Alert.alert('Error', 'Unexpected error cancelling appointment.');
+          }
+        }
+      }
+    ]);
+  };
+
+  const openReschedule = (a: AppointmentRow) => {
+    // prefill modal fields without converting to UTC (avoid timezone date shifts)
+    try {
+      setEditingId(a.id);
+      setSelDoctor(a.doctor_id ?? '');
+      setSelPatient(a.patient_id ?? '');
+
+      // expected formats: "YYYY-MM-DDTHH:MM:SS" or "YYYY-MM-DDTHH:MM:SSZ" or with timezone offset
+      const startMatch = String(a.starts_at).match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
+      const endMatch = String(a.ends_at).match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
+
+      if (startMatch) {
+        setDateStr(startMatch[1]);
+        setStartStr(startMatch[2]);
+      } else {
+        // fallback to Date-based extraction if the format is unexpected
+        const s = new Date(a.starts_at);
+        setDateStr(!isNaN(+s) ? s.toISOString().slice(0, 10) : '');
+        setStartStr(!isNaN(+s) ? s.toISOString().slice(11, 16) : '09:00');
+      }
+
+      if (endMatch) {
+        setEndStr(endMatch[2]);
+      } else {
+        const e = new Date(a.ends_at);
+        setEndStr(!isNaN(+e) ? e.toISOString().slice(11, 16) : '09:30');
+      }
+
+      setModalOpen(true);
+    } catch (err) {
+      console.warn('openReschedule failed:', err);
+      Alert.alert('Error', 'Could not open reschedule modal.');
+    }
+  };
+
   /* -------------------------- derived UI -------------------------- */
   const sections = useMemo(() => {
     const byDay: Record<string, AppointmentRow[]> = {};
     for (const a of appointments) {
-      const k = new Date(a.starts_at).toISOString().slice(0, 10);
+      const match = String(a.starts_at).match(/^(\d{4}-\d{2}-\d{2})T/);
+      const k = match
+        ? match[1]
+        : (() => {
+            try { return new Date(a.starts_at).toISOString().slice(0, 10); }
+            catch { return String(a.starts_at).slice(0, 10); }
+          })();
       (byDay[k] ||= []).push(a);
     }
     return Object.entries(byDay)
@@ -418,34 +561,21 @@ export default function AppointmentsScreen() {
 
         {/* surface card for filters + list */}
         <View style={styles.surface}>
-          {/* quick filters */}
-          <View style={styles.quickRow}>
-            <FilterChip label="7 days" onPress={() => setRangeDays(7)} />
-            <FilterChip label="30 days" onPress={() => setRangeDays(30)} />
-            <FilterChip label="All next month" onPress={() => setNextMonth()} />
+          {/* tabs: Current | Previous | Cancelled */}
+          <View style={styles.tabsRow}>
+            <Pressable onPress={() => setSelectedTab('Current')} style={[styles.tab, selectedTab === 'Current' && styles.tabSelected]}>
+              <Text style={[styles.tabText, selectedTab === 'Current' && styles.tabTextSelected]}>Current</Text>
+            </Pressable>
+            <Pressable onPress={() => setSelectedTab('Previous')} style={[styles.tab, selectedTab === 'Previous' && styles.tabSelected]}>
+              <Text style={[styles.tabText, selectedTab === 'Previous' && styles.tabTextSelected]}>Previous</Text>
+            </Pressable>
+            <Pressable onPress={() => setSelectedTab('Cancelled')} style={[styles.tab, selectedTab === 'Cancelled' && styles.tabSelected]}>
+              <Text style={[styles.tabText, selectedTab === 'Cancelled' && styles.tabTextSelected]}>Cancelled</Text>
+            </Pressable>
           </View>
 
-          {/* Date inputs */}
-          <View style={styles.filterRow}>
-            <Text style={styles.filterLabel}>From</Text>
-            <TextInput
-              style={styles.filterInput}
-              value={fromDate}
-              onChangeText={(val) => { setFromDate(val); updateUrlParams(val, toDate); }}
-              placeholder="YYYY-MM-DD"
-              autoCapitalize="none"
-              maxLength={10}
-            />
-            <Text style={[styles.filterLabel, { marginLeft: 12 }]}>To</Text>
-            <TextInput
-              style={styles.filterInput}
-              value={toDate}
-              onChangeText={(val) => { setToDate(val); updateUrlParams(fromDate, val); }}
-              placeholder="YYYY-MM-DD"
-              autoCapitalize="none"
-              maxLength={10}
-            />
-          </View>
+          {/* Hide date range inputs but keep structure for spacing */}
+          <View style={{ height: 12 }} />
 
           {/* list */}
           <SectionList
@@ -462,21 +592,40 @@ export default function AppointmentsScreen() {
             renderItem={({ item }) => (
               <Pressable
                 style={styles.card}
-                onPress={() => router.push(`/appointments/${item.id}`)}
+                // intentionally no onPress: clicking the card should not navigate to a detail page
                 android_ripple={{ color: '#E2E8F0' }}
               >
-                <View style={styles.cardRow}>
-                  <MaterialCommunityIcons name="calendar" size={28} color="#0EA5E9" />
-                  <View style={{ marginLeft: 12, flex: 1 }}>
-                    <Text style={styles.counterpartName}>
-                      {role === 'doctor' ? (item.patient_name ?? 'Patient') : (item.doctor_name ?? 'Doctor')}
-                    </Text>
-                    <Text style={styles.timeText}>{formatRange(item.starts_at, item.ends_at)}</Text>
-                  </View>
-                  <StatusBadge status={item.status} />
-                </View>
+                 <View style={styles.cardRow}>
+                   <MaterialCommunityIcons name="calendar" size={28} color="#0EA5E9" />
+                   <View style={{ marginLeft: 12, flex: 1 }}>
+                     {/* primary counterpart (patient for doctors, doctor for patients) */}
+                     <Text style={styles.counterpartName}>
+                       {role === 'doctor' ? (item.patient_name ?? 'Patient') : (item.doctor_name ?? 'Doctor')}
+                     </Text>
+                     {/* show doctor's name when it's not already the primary counterpart */}
+                     {item.doctor_name && (role === 'doctor' || item.doctor_name !== (role === 'doctor' ? item.patient_name : item.doctor_name)) && (
+                       <Text style={styles.doctorText}>Dr. {item.doctor_name}</Text>
+                     )}
+                     {/* only show time range (HH:MM – HH:MM) */}
+                     <Text style={styles.timeText}>{formatTimeRange(item.starts_at, item.ends_at)}</Text>
+                   </View>
+                   <View style={{ alignItems: 'flex-end', gap: 8 }}>
+                     <StatusBadge status={item.status} />
+                     {/* action buttons visible only for people involved */}
+                     {user && (user.id === item.doctor_id || user.id === item.patient_id) && item.status !== 'cancelled' && (
+                       <View style={{ flexDirection: 'row', marginTop: 8 }}>
+                         <Pressable style={[styles.actionSmall, styles.actionSmallReschedule]} onPress={() => openReschedule(item)}>
+                           <Text style={[styles.actionSmallText, { color: '#fff' }]}>Reschedule</Text>
+                         </Pressable>
+                         <Pressable style={[styles.actionSmall, styles.actionSmallCancel]} onPress={() => cancelAppointment(item.id)}>
+                           <Text style={[styles.actionSmallText, { color: '#b91c1c' }]}>Cancel</Text>
+                         </Pressable>
+                       </View>
+                     )}
+                   </View>
+                 </View>
               </Pressable>
-            )}
+             )}
           />
         </View>
 
@@ -492,79 +641,171 @@ export default function AppointmentsScreen() {
       <Modal visible={modalOpen} animationType="slide" transparent>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>New Appointment</Text>
+            <Text style={styles.modalTitle}>{editingId ? 'Reschedule Appointment' : 'New Appointment'}</Text>
             <ScrollView contentContainerStyle={{ paddingBottom: 8 }}>
               {(role === 'patient' || role === 'both') && (
                 <>
                   <Text style={styles.inputLabel}>Doctor (linked only)</Text>
-                  <View style={styles.pillList}>
-                    {doctors.map(d => (
-                      <Pressable
-                        key={d.id}
-                        onPress={() => setSelDoctor(d.id)}
-                        style={[styles.pill, selDoctor === d.id && styles.pillSelected]}
+                  {isWeb ? (
+                    <View style={styles.pillList}>
+                      {doctors.map(d => (
+                        <Pressable
+                          key={d.id}
+                          onPress={() => setSelDoctor(d.id)}
+                          style={[styles.pill, selDoctor === d.id && styles.pillSelected]}
+                        >
+                          <Text style={[styles.pillText, selDoctor === d.id && styles.pillTextSelected]}>
+                            {d.name}
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  ) : (
+                    <View style={styles.pickerContainer}>
+                      <Picker
+                        selectedValue={selDoctor}
+                        onValueChange={value => setSelDoctor(value)}
+                        style={styles.picker}
                       >
-                        <Text style={[styles.pillText, selDoctor === d.id && styles.pillTextSelected]}>
-                          {d.name}
-                        </Text>
-                      </Pressable>
-                    ))}
-                    {doctors.length === 0 && <Text style={styles.helpText}>No linked doctors found.</Text>}
-                  </View>
+                        {doctors.map(d => (
+                          <Picker.Item key={d.id} label={d.name} value={d.id} />
+                        ))}
+                      </Picker>
+                    </View>
+                  )}
+                  {doctors.length === 0 && <Text style={styles.helpText}>No linked doctors found.</Text>}
                 </>
               )}
 
               {(role === 'doctor' || role === 'both') && (
                 <>
                   <Text style={styles.inputLabel}>Patient</Text>
-                  <View style={[styles.pillList, { maxHeight: 120 }]}>
-                    <ScrollView horizontal contentContainerStyle={{ paddingVertical: 6 }}>
-                      {patients.map(p => (
-                        <Pressable
-                          key={p.id}
-                          onPress={() => setSelPatient(p.id)}
-                          style={[styles.pill, selPatient === p.id && styles.pillSelected]}
-                        >
-                          <Text style={[styles.pillText, selPatient === p.id && styles.pillTextSelected]}>
-                            {p.name}
-                          </Text>
-                        </Pressable>
-                      ))}
-                    </ScrollView>
-                    {patients.length === 0 && <Text style={styles.helpText}>No patients found.</Text>}
-                  </View>
+                  {isWeb ? (
+                    <View style={[styles.pillList, { maxHeight: 120 }]}>
+                      <ScrollView horizontal contentContainerStyle={{ paddingVertical: 6 }}>
+                        {patients.map(p => (
+                          <Pressable
+                            key={p.id}
+                            onPress={() => setSelPatient(p.id)}
+                            style={[styles.pill, selPatient === p.id && styles.pillSelected]}
+                          >
+                            <Text style={[styles.pillText, selPatient === p.id && styles.pillTextSelected]}>
+                              {p.name}
+                            </Text>
+                          </Pressable>
+                        ))}
+                      </ScrollView>
+                    </View>
+                  ) : (
+                    <View style={styles.pickerContainer}>
+                      <Picker
+                        selectedValue={selPatient}
+                        onValueChange={value => setSelPatient(value)}
+                        style={styles.picker}
+                      >
+                        <Picker.Item label="Select a patient..." value="" />
+                        {patients.map(p => (
+                          <Picker.Item key={p.id} label={p.name} value={p.id} />
+                        ))}
+                      </Picker>
+                    </View>
+                  )}
+                  {patients.length === 0 && <Text style={styles.helpText}>No patients found.</Text>}
                 </>
               )}
 
-              <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
-              <TextInput
-                style={styles.textInput}
-                value={dateStr}
-                onChangeText={setDateStr}
-                placeholder="2025-10-12"
-                autoCapitalize="none"
-              />
+              <Text style={styles.inputLabel}>Date</Text>
+              {isWeb ? (
+                <TextInput
+                  style={styles.textInput}
+                  value={dateStr}
+                  onChangeText={setDateStr}
+                  placeholder="YYYY-MM-DD"
+                  autoCapitalize="none"
+                />
+              ) : (
+                <>
+                  <Pressable 
+                    style={styles.dateButton} 
+                    onPress={() => setShowDatePicker(true)}
+                  >
+                    <Text style={styles.dateButtonText}>{dateStr || 'Select date...'}</Text>
+                  </Pressable>
+                  {showDatePicker && (
+                    <DateTimePicker
+                      value={dateStr ? new Date(dateStr) : new Date()}
+                      mode="date"
+                      onChange={(e, date) => {
+                        setShowDatePicker(false);
+                        if (date) setDateStr(date.toISOString().slice(0, 10));
+                      }}
+                    />
+                  )}
+                </>
+              )}
 
               <View style={{ flexDirection: 'row', gap: 12, marginTop: 8 }}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.inputLabel}>Start (HH:MM)</Text>
-                  <TextInput
-                    style={styles.textInput}
-                    value={startStr}
-                    onChangeText={setStartStr}
-                    placeholder="09:00"
-                    autoCapitalize="none"
-                  />
+                  <Text style={styles.inputLabel}>Start Time</Text>
+                  {isWeb ? (
+                    <TextInput
+                      style={styles.textInput}
+                      value={startStr}
+                      onChangeText={setStartStr}
+                      placeholder="09:00"
+                      autoCapitalize="none"
+                    />
+                  ) : (
+                    <>
+                      <Pressable 
+                        style={styles.dateButton} 
+                        onPress={() => setShowStartPicker(true)}
+                      >
+                        <Text style={styles.dateButtonText}>{startStr || 'Select time...'}</Text>
+                      </Pressable>
+                      {showStartPicker && (
+                        <DateTimePicker
+                          value={startStr ? new Date(`2000-01-01T${startStr}`) : new Date().setHours(9, 0, 0, 0)}
+                          mode="time"
+                          onChange={(e, date) => {
+                            setShowStartPicker(false);
+                            if (date) setStartStr(date.toTimeString().slice(0, 5));
+                          }}
+                        />
+                      )}
+                    </>
+                  )}
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.inputLabel}>End (HH:MM)</Text>
-                  <TextInput
-                    style={styles.textInput}
-                    value={endStr}
-                    onChangeText={setEndStr}
-                    placeholder="09:30"
-                    autoCapitalize="none"
-                  />
+                  <Text style={styles.inputLabel}>End Time</Text>
+                  {isWeb ? (
+                    <TextInput
+                      style={styles.textInput}
+                      value={endStr}
+                      onChangeText={setEndStr}
+                      placeholder="09:30"
+                      autoCapitalize="none"
+                    />
+                  ) : (
+                    <>
+                      <Pressable 
+                        style={styles.dateButton} 
+                        onPress={() => setShowEndPicker(true)}
+                      >
+                        <Text style={styles.dateButtonText}>{endStr || 'Select time...'}</Text>
+                      </Pressable>
+                      {showEndPicker && (
+                        <DateTimePicker
+                          value={endStr ? new Date(`2000-01-01T${endStr}`) : new Date().setHours(9, 30, 0, 0)}
+                          mode="time"
+                          onChange={(e, date) => {
+                            setShowEndPicker(false);
+                            if (date) setEndStr(date.toTimeString().slice(0, 5));
+                          }}
+                        />
+                      )}
+                    </>
+                  )}
                 </View>
               </View>
 
@@ -580,7 +821,7 @@ export default function AppointmentsScreen() {
                 onPress={createAppointment}
                 disabled={creating}
               >
-                {creating ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveText}>Save</Text>}
+                {creating ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveText}>{editingId ? 'Update' : 'Save'}</Text>}
               </Pressable>
             </View>
           </View>
@@ -596,15 +837,14 @@ export default function AppointmentsScreen() {
     end.setDate(start.getDate() + n);
     setFromDate(start.toISOString().slice(0, 10));
     setToDate(end.toISOString().slice(0, 10));
-    updateUrlParams(start.toISOString().slice(0, 10), end.toISOString().slice(0, 10));
   }
+
   function setNextMonth() {
     const d = new Date();
     const start = new Date(d.getFullYear(), d.getMonth() + 1, 1);
     const end = new Date(d.getFullYear(), d.getMonth() + 2, 0);
     setFromDate(start.toISOString().slice(0, 10));
     setToDate(end.toISOString().slice(0, 10));
-    updateUrlParams(start.toISOString().slice(0, 10), end.toISOString().slice(0, 10));
   }
 }
 
@@ -658,6 +898,21 @@ function formatRange(startIso: string, endIso: string) {
     return `${startIso} – ${endIso}`;
   }
 }
+// return only the time portion "HH:MM – HH:MM" avoiding timezone shifts by extracting from ISO string
+function formatTimeRange(startIso: string, endIso: string) {
+  const sMatch = String(startIso).match(/T(\d{2}:\d{2})/);
+  const eMatch = String(endIso).match(/T(\d{2}:\d{2})/);
+  if (sMatch && eMatch) return `${sMatch[1]} – ${eMatch[1]}`;
+  try {
+    const s = new Date(startIso);
+    const e = new Date(endIso);
+    const st = s.toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' });
+    const et = e.toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' });
+    return `${st} – ${et}`;
+  } catch {
+    return `${startIso} – ${endIso}`;
+  }
+}
 function capitalize(s: string) {
   if (!s) return '';
   return s[0].toUpperCase() + s.slice(1);
@@ -688,6 +943,12 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
 
+  tabsRow: { flexDirection: 'row', gap: 8, marginBottom: 8, alignItems: 'center' },
+  tab: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, borderWidth: 1, borderColor: '#CBD5E1', backgroundColor: '#fff' },
+  tabSelected: { backgroundColor: '#0EA5E9', borderColor: '#0EA5E9' },
+  tabText: { color: '#0F172A', fontWeight: '700' },
+  tabTextSelected: { color: '#fff' },
+
   quickRow: { flexDirection: 'row', gap: 8, marginBottom: 8, flexWrap: 'wrap' },
   chip: { backgroundColor: '#EFF6FF', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, borderWidth: 1, borderColor: '#DBEAFE' },
   chipText: { color: '#1D4ED8', fontWeight: '700' },
@@ -702,6 +963,7 @@ const styles = StyleSheet.create({
   card: { backgroundColor: '#FFFFFF', borderRadius: 16, borderWidth: 1, borderColor: '#E2E8F0', padding: 16, marginBottom: 12, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 8, elevation: 2 },
   cardRow: { flexDirection: 'row', alignItems: 'center' },
   counterpartName: { fontSize: 18, fontWeight: '800', marginBottom: 2, color: '#0F172A' },
+  doctorText: { fontSize: 13, color: '#64748B', marginTop: 2 },
   timeText: { fontSize: 14, color: '#0EA5E9' },
   badge: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6, alignSelf: 'flex-start' },
   badgeText: { fontSize: 12, fontWeight: '800' },
@@ -728,6 +990,11 @@ const styles = StyleSheet.create({
   cancelText: { color: '#0F172A', fontWeight: '700' },
   saveText: { color: '#fff', fontWeight: '700' },
 
+  actionSmall: { paddingHorizontal: 8, paddingVertical: 6, borderRadius: 8, marginLeft: 8, justifyContent: 'center', alignItems: 'center' },
+  actionSmallText: { fontWeight: '700', fontSize: 12 },
+  actionSmallCancel: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#FCA5A5' },
+  actionSmallReschedule: { backgroundColor: '#0EA5E9' },
+
   fab: {
     position: 'absolute',
     right: 20,
@@ -742,5 +1009,29 @@ const styles = StyleSheet.create({
     shadowColor: '#000',
     shadowOpacity: 0.15,
     shadowRadius: 8,
+  },
+
+  pickerContainer: {
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 8,
+    backgroundColor: '#F8FAFC',
+    marginVertical: 4,
+  },
+  picker: {
+    height: 50,
+  },
+  dateButton: {
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 8,
+    backgroundColor: '#F8FAFC',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginVertical: 4,
+  },
+  dateButtonText: {
+    fontSize: 15,
+    color: '#0F172A',
   },
 });
