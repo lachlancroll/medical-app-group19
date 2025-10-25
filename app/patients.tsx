@@ -319,7 +319,7 @@ export default function PatientsScreen() {
   };
 
   return (
-    <LinearGradient colors={["#0ea5e9", "#6366f1"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ flex: 1 }}>
+    <LinearGradient colors={['rgb(21, 210, 209)', 'rgb(22, 161, 157)']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ flex: 1 }}>
       <SafeAreaView style={styles.container}>
         {/* Header */}
         <View style={styles.header}>
@@ -635,7 +635,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
   },
   resultRow: { paddingVertical: 12, borderBottomWidth: 1, borderColor: "#F1F5F9" },
-  resultName: { fontWeight: "700", fontSize: 16, color: "#0f172a" },
+  resultName: { fontWeight: "700", fontSize: 16, color: "rgba(15, 23, 42, 1)" },
   resultEmail: { fontSize: 13, color: "#64748B" },
   pendingTitle: {
     fontWeight: "800",

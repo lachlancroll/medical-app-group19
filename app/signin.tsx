@@ -51,7 +51,7 @@ export default function SignInPage() {
 
   return (
     <LinearGradient
-      colors={['#0ea5e9', '#6366f1']}
+      colors={['rgb(21, 210, 209)', 'rgb(22, 161, 157)']}
       start={{ x: 0, y: 0 }}
       end={{ x: 1, y: 1 }}
       style={styles.bg}
@@ -185,7 +185,7 @@ const styles = StyleSheet.create({
   error: { color: '#ef4444', textAlign: 'center', marginTop: 4, marginBottom: 10 },
 
   primaryBtn: {
-    backgroundColor: '#2563eb',
+    backgroundColor: 'rgb(22, 161, 157)',
     borderRadius: 12,
     paddingVertical: 14,
     alignItems: 'center',
@@ -196,7 +196,7 @@ const styles = StyleSheet.create({
 
   linkBtn: { paddingVertical: 10, alignItems: 'center' },
   linkText: { color: '#334155' },
-  linkTextBold: { color: '#2563eb', fontWeight: '700' },
+  linkTextBold: { color: 'rgb(22, 161, 157)', fontWeight: '700' },
 
   caption: { color: '#e5e7eb', marginTop: 14, fontSize: 12 },
 });
