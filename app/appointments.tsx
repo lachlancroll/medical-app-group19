@@ -584,10 +584,16 @@ export default function AppointmentsScreen() {
                 <View style={styles.cardRow}>
                   <MaterialCommunityIcons name="calendar" size={28} color="#0EA5E9" />
                   <View style={{ marginLeft: 12, flex: 1 }}>
+                    {/* primary counterpart (patient for doctors, doctor for patients) */}
                     <Text style={styles.counterpartName}>
                       {role === 'doctor' ? (item.patient_name ?? 'Patient') : (item.doctor_name ?? 'Doctor')}
                     </Text>
-                    <Text style={styles.timeText}>{formatRange(item.starts_at, item.ends_at)}</Text>
+                    {/* show doctor's name when it's not already the primary counterpart */}
+                    {item.doctor_name && (role === 'doctor' || item.doctor_name !== (role === 'doctor' ? item.patient_name : item.doctor_name)) && (
+                      <Text style={styles.doctorText}>Dr. {item.doctor_name}</Text>
+                    )}
+                    {/* only show time range (HH:MM – HH:MM) */}
+                    <Text style={styles.timeText}>{formatTimeRange(item.starts_at, item.ends_at)}</Text>
                   </View>
                   <View style={{ alignItems: 'flex-end', gap: 8 }}>
                     <StatusBadge status={item.status} />
@@ -787,6 +793,21 @@ function formatRange(startIso: string, endIso: string) {
     return `${startIso} – ${endIso}`;
   }
 }
+// return only the time portion "HH:MM – HH:MM" avoiding timezone shifts by extracting from ISO string
+function formatTimeRange(startIso: string, endIso: string) {
+  const sMatch = String(startIso).match(/T(\d{2}:\d{2})/);
+  const eMatch = String(endIso).match(/T(\d{2}:\d{2})/);
+  if (sMatch && eMatch) return `${sMatch[1]} – ${eMatch[1]}`;
+  try {
+    const s = new Date(startIso);
+    const e = new Date(endIso);
+    const st = s.toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' });
+    const et = e.toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' });
+    return `${st} – ${et}`;
+  } catch {
+    return `${startIso} – ${endIso}`;
+  }
+}
 function capitalize(s: string) {
   if (!s) return '';
   return s[0].toUpperCase() + s.slice(1);
@@ -831,6 +852,7 @@ const styles = StyleSheet.create({
   card: { backgroundColor: '#FFFFFF', borderRadius: 16, borderWidth: 1, borderColor: '#E2E8F0', padding: 16, marginBottom: 12, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 8, elevation: 2 },
   cardRow: { flexDirection: 'row', alignItems: 'center' },
   counterpartName: { fontSize: 18, fontWeight: '800', marginBottom: 2, color: '#0F172A' },
+  doctorText: { fontSize: 13, color: '#64748B', marginTop: 2 },
   timeText: { fontSize: 14, color: '#0EA5E9' },
   badge: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6, alignSelf: 'flex-start' },
   badgeText: { fontSize: 12, fontWeight: '800' },
