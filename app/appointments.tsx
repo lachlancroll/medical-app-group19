@@ -68,6 +68,9 @@ export default function AppointmentsScreen() {
 
   const [refreshKey, setRefreshKey] = useState(0);
 
+  // tab state: "Current" | "Previous" | "Cancelled"
+  const [selectedTab, setSelectedTab] = useState<'Current' | 'Previous' | 'Cancelled'>('Current');
+
   // editing/reschedule state
   const [editingId, setEditingId] = useState<string | null>(null);
 
@@ -151,58 +154,83 @@ export default function AppointmentsScreen() {
   /* ---------------- fetch appointments for this user -------------- */
   useEffect(() => {
     const run = async () => {
-      if (!user || role === 'none' || !fromDate || !toDate) return;
-      setLoading(true);
+      if (!user || role === 'none') return;
+       setLoading(true);
 
-      try {
+       try {
         let query = supabase
           .from('appointments')
           .select('id, starts_at, ends_at, status, doctor_id, patient_id')
           .order('starts_at', { ascending: true });
 
-        if (role === 'doctor') query = query.eq('doctor_id', user.id);
-        else if (role === 'patient') query = query.eq('patient_id', user.id);
-        else query = query.or(`doctor_id.eq.${user.id},patient_id.eq.${user.id}`);
+         if (role === 'doctor') query = query.eq('doctor_id', user.id);
+         else if (role === 'patient') query = query.eq('patient_id', user.id);
+         else query = query.or(`doctor_id.eq.${user.id},patient_id.eq.${user.id}`);
 
-        const toEnd = /^\d{4}-\d{2}-\d{2}$/.test(toDate) ? `${toDate}T23:59:59` : toDate;
-        query = query.gte('starts_at', fromDate).lte('starts_at', toEnd);
+         // compute date bounds / status filter based on selected tab
+         const today = new Date();
+         today.setHours(0, 0, 0);
+         const todayYmd = today.toISOString().slice(0, 10);
 
-        const { data, error, status, statusText } = await query;
-        if (error) {
-          console.error('appointments query error:', { error, status, statusText });
-          setAppointments([]);
-          return;
-        }
+         let localFrom = fromDate;
+         let localTo = toDate;
+         if (selectedTab === 'Current') {
+           localFrom = todayYmd;
+           localTo = '2099-12-31';
+           // exclude cancelled current appointments
+           query = (query as any).neq('status', 'cancelled');
+         } else if (selectedTab === 'Previous') {
+           localFrom = '1970-01-01';
+           const y = new Date();
+           y.setDate(y.getDate() - 1);
+           localTo = y.toISOString().slice(0, 10);
+           // exclude cancelled previous appointments
+           query = (query as any).neq('status', 'cancelled');
+         } else if (selectedTab === 'Cancelled') {
+           localFrom = '1970-01-01';
+           localTo = '2099-12-31';
+           query = (query as any).eq('status', 'cancelled');
+         }
 
-        const rows = (data ?? []) as any[];
-        const doctorIds = Array.from(new Set(rows.map(r => r.doctor_id).filter(Boolean)));
-        const patientIds = Array.from(new Set(rows.map(r => r.patient_id).filter(Boolean)));
+         const toEnd = /^\d{4}-\d{2}-\d{2}$/.test(localTo) ? `${localTo}T23:59:59` : localTo;
+         query = query.gte('starts_at', localFrom).lte('starts_at', toEnd);
 
-        const [docNames, patNames] = await Promise.all([
-          lookupNamesByIds(doctorIds),
-          lookupNamesByIds(patientIds),
-        ]);
+         const { data, error, status, statusText } = await query;
+         if (error) {
+           console.error('appointments query error:', { error, status, statusText });
+           setAppointments([]);
+           return;
+         }
 
-        const merged: AppointmentRow[] = rows.map(r => ({
-          id: r.id,
-          starts_at: r.starts_at,
-          ends_at: r.ends_at,
-          status: r.status,
-          doctor_id: r.doctor_id,
-          patient_id: r.patient_id,
-          doctor_name: docNames[r.doctor_id] ?? shortId(r.doctor_id) ?? 'Doctor',
-          patient_name: patNames[r.patient_id] ?? shortId(r.patient_id) ?? 'Patient',
-        }));
+         const rows = (data ?? []) as any[];
+         const doctorIds = Array.from(new Set(rows.map(r => r.doctor_id).filter(Boolean)));
+         const patientIds = Array.from(new Set(rows.map(r => r.patient_id).filter(Boolean)));
 
-        setAppointments(merged);
-      } catch (e) {
-        console.error('appointments fetch fatal:', e);
-      } finally {
-        setLoading(false);
-      }
-    };
+         const [docNames, patNames] = await Promise.all([
+           lookupNamesByIds(doctorIds),
+           lookupNamesByIds(patientIds),
+         ]);
+
+         const merged: AppointmentRow[] = rows.map(r => ({
+           id: r.id,
+           starts_at: r.starts_at,
+           ends_at: r.ends_at,
+           status: r.status,
+           doctor_id: r.doctor_id,
+           patient_id: r.patient_id,
+           doctor_name: docNames[r.doctor_id] ?? shortId(r.doctor_id) ?? 'Doctor',
+           patient_name: patNames[r.patient_id] ?? shortId(r.patient_id) ?? 'Patient',
+         }));
+
+         setAppointments(merged);
+       } catch (e) {
+         console.error('appointments fetch fatal:', e);
+       } finally {
+         setLoading(false);
+       }
+     };
     run();
-  }, [user, role, fromDate, toDate, refreshKey]);
+  }, [user, role, fromDate, toDate, refreshKey, selectedTab]);
 
   /* -------------------------- pickers ----------------------------- */
   async function loadDoctorOptions(currentUserId: string, currentRole: UserRole) {
@@ -533,11 +561,17 @@ export default function AppointmentsScreen() {
 
         {/* surface card for filters + list */}
         <View style={styles.surface}>
-          {/* quick filters */}
-          <View style={styles.quickRow}>
-            <FilterChip label="Next 7 days" onPress={() => setRangeDays(7)} />
-            <FilterChip label="Next 30 days" onPress={() => setRangeDays(30)} />
-            <FilterChip label="Next month" onPress={() => setNextMonth()} />
+          {/* tabs: Current | Previous | Cancelled */}
+          <View style={styles.tabsRow}>
+            <Pressable onPress={() => setSelectedTab('Current')} style={[styles.tab, selectedTab === 'Current' && styles.tabSelected]}>
+              <Text style={[styles.tabText, selectedTab === 'Current' && styles.tabTextSelected]}>Current</Text>
+            </Pressable>
+            <Pressable onPress={() => setSelectedTab('Previous')} style={[styles.tab, selectedTab === 'Previous' && styles.tabSelected]}>
+              <Text style={[styles.tabText, selectedTab === 'Previous' && styles.tabTextSelected]}>Previous</Text>
+            </Pressable>
+            <Pressable onPress={() => setSelectedTab('Cancelled')} style={[styles.tab, selectedTab === 'Cancelled' && styles.tabSelected]}>
+              <Text style={[styles.tabText, selectedTab === 'Cancelled' && styles.tabTextSelected]}>Cancelled</Text>
+            </Pressable>
           </View>
 
           {/* Hide date range inputs but keep structure for spacing */}
@@ -908,6 +942,12 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 3,
   },
+
+  tabsRow: { flexDirection: 'row', gap: 8, marginBottom: 8, alignItems: 'center' },
+  tab: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, borderWidth: 1, borderColor: '#CBD5E1', backgroundColor: '#fff' },
+  tabSelected: { backgroundColor: '#0EA5E9', borderColor: '#0EA5E9' },
+  tabText: { color: '#0F172A', fontWeight: '700' },
+  tabTextSelected: { color: '#fff' },
 
   quickRow: { flexDirection: 'row', gap: 8, marginBottom: 8, flexWrap: 'wrap' },
   chip: { backgroundColor: '#EFF6FF', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, borderWidth: 1, borderColor: '#DBEAFE' },
