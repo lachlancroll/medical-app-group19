@@ -488,7 +488,13 @@ export default function AppointmentsScreen() {
   const sections = useMemo(() => {
     const byDay: Record<string, AppointmentRow[]> = {};
     for (const a of appointments) {
-      const k = new Date(a.starts_at).toISOString().slice(0, 10);
+      const match = String(a.starts_at).match(/^(\d{4}-\d{2}-\d{2})T/);
+      const k = match
+        ? match[1]
+        : (() => {
+            try { return new Date(a.starts_at).toISOString().slice(0, 10); }
+            catch { return String(a.starts_at).slice(0, 10); }
+          })();
       (byDay[k] ||= []).push(a);
     }
     return Object.entries(byDay)
