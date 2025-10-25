@@ -391,7 +391,7 @@ export default function AppointmentsScreen() {
   /* ----------------------------- UI ------------------------------- */
   if (loading) {
     return (
-      <LinearGradient colors={['#0ea5e9', '#6366f1']} start={{x:0,y:0}} end={{x:1,y:1}} style={{flex:1}}>
+      <LinearGradient colors={['rgb(21, 210, 209)', 'rgb(22, 161, 157)']} start={{x:0,y:0}} end={{x:1,y:1}} style={{flex:1}}>
         <SafeAreaView style={styles.container}>
           <ActivityIndicator color="#fff" />
         </SafeAreaView>
@@ -400,7 +400,7 @@ export default function AppointmentsScreen() {
   }
 
   return (
-    <LinearGradient colors={['#0ea5e9', '#6366f1']} start={{x:0,y:0}} end={{x:1,y:1}} style={{flex:1}}>
+    <LinearGradient colors={['rgb(21, 210, 209)', 'rgb(22, 161, 157)']} start={{x:0,y:0}} end={{x:1,y:1}} style={{flex:1}}>
       <SafeAreaView style={styles.container}>
         {/* header */}
         <View style={styles.headerRow}>
