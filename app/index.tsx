@@ -64,7 +64,10 @@ function PatientHome({ router }: { user?: any; router: any }) {
   const [rxDates, setRxDates] = useState<string[]>([]);
   const [rxByDate, setRxByDate] = useState<Record<string, string[]>>({});
   const [apptDates, setApptDates] = useState<string[]>([]);
-  const [apptByDate, setApptByDate] = useState<Record<string, string[]>>({});
+  // store appointments as objects so we can include doctor name:
+  const [apptByDate, setApptByDate] = useState<
+    Record<string, { timeLabel: string; doctorName: string }[]>
+  >({});
 
   // Day details modal
   const [dayModalOpen, setDayModalOpen] = useState(false);
@@ -227,7 +230,23 @@ function PatientHome({ router }: { user?: any; router: any }) {
         if (apErr) throw apErr;
 
         const aDates: string[] = [];
-        const aMap: Record<string, string[]> = {};
+        const aMap: Record<string, { timeLabel: string; doctorName: string }[]> =
+          {};
+
+        // gather doctor ids to fetch names
+        const doctorIds = Array.from(
+          new Set((appts || []).map((a: any) => a.doctor_id))
+        );
+        let doctorsById: Map<string, any> = new Map();
+        if (doctorIds.length > 0) {
+          const { data: docs, error: docErr } = await supabase
+            .from("profiles")
+            .select("user_id, full_name, email")
+            .in("user_id", doctorIds);
+          if (docErr) throw docErr;
+          doctorsById = new Map((docs || []).map((d) => [d.user_id, d]));
+        }
+
         (appts || []).forEach((a: any) => {
           const iso = a.starts_at.slice(0, 10);
           aDates.push(iso);
@@ -235,7 +254,13 @@ function PatientHome({ router }: { user?: any; router: any }) {
           const t = new Date(a.starts_at);
           const hh = String(t.getHours()).padStart(2, "0");
           const mm = String(t.getMinutes()).padStart(2, "0");
-          aMap[iso].push(`Appointment @ ${hh}:${mm}`);
+          const doctor = doctorsById.get(a.doctor_id);
+          const docName =
+            doctor?.full_name || doctor?.email || a.doctor_id || "Assigned";
+          aMap[iso].push({
+            timeLabel: `Appointment @ ${hh}:${mm}`,
+            doctorName: docName,
+          });
         });
 
         setApptDates(aDates);
@@ -416,49 +441,91 @@ function PatientHome({ router }: { user?: any; router: any }) {
       </Modal>
 
       {/* ---- Day details popup ---- */}
-      <Modal visible={dayModalOpen} transparent animationType="fade">
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>
-              {dayModalDate ? new Date(dayModalDate + "T00:00:00").toDateString() : "Day"}
-            </Text>
+      {/* ---- Day details popup ---- */}
+<Modal visible={dayModalOpen} transparent animationType="fade">
+  <View style={styles.modalBackdrop}>
+    <View style={[styles.modalCard, { maxHeight: "80%" }]}>
+      <Text style={styles.modalTitle}>
+        {dayModalDate
+          ? new Date(dayModalDate + "T00:00:00").toDateString()
+          : "Day"}
+      </Text>
 
-            {emptyDay ? (
-              <Text style={{ textAlign: "center", color: "#64748B" }}>
-                No appointments or prescriptions
-              </Text>
-            ) : (
-              <View style={{ gap: 12 }}>
-                {dayAppts.length > 0 && (
-                  <View>
-                    <Text style={styles.sectionHeading}>Appointments</Text>
-                    {dayAppts.map((t, i) => (
-                      <Text key={i} style={styles.itemRow}>{t}</Text>
-                    ))}
+      {emptyDay ? (
+        <Text style={{ textAlign: "center", color: "#64748B", marginTop: 10 }}>
+          No appointments or prescriptions
+        </Text>
+      ) : (
+        <View style={{ gap: 16, marginTop: 8 }}>
+          {dayAppts.length > 0 && (
+            <View>
+              <Text style={styles.sectionHeading}>Appointments</Text>
+              {dayAppts.map((t, i) => (
+                <View key={i} style={styles.apptCard}>
+                  <View style={styles.apptRow}>
+                    <Ionicons
+                      name="time-outline"
+                      size={18}
+                      color="#2563eb"
+                      style={{ marginRight: 6 }}
+                    />
+                    <Text style={styles.apptTime}>
+                      {typeof t === "string" ? t : t.timeLabel}
+                    </Text>
                   </View>
-                )}
-                {dayRx.length > 0 && (
-                  <View>
-                    <Text style={styles.sectionHeading}>Prescriptions</Text>
-                    {dayRx.map((s, i) => (
-                      <Text key={i} style={styles.itemRow}>
-                        {s || "Prescription"}
-                      </Text>
-                    ))}
+                  <View style={styles.apptRow}>
+                    <Ionicons
+                      name="person-outline"
+                      size={18}
+                      color="#2563eb"
+                      style={{ marginRight: 6 }}
+                    />
+                    <Text style={styles.apptDoctor}>
+                      Doctor: {typeof t === "string" ? "Assigned" : t.doctorName}
+                    </Text>
                   </View>
-                )}
-              </View>
-            )}
-
-            <TouchableOpacity
-              onPress={() => setDayModalOpen(false)}
-              style={{ alignSelf: "center", marginTop: 12 }}
-            >
-              <Text style={{ color: "#2563eb", fontWeight: "700" }}>Close</Text>
-            </TouchableOpacity>
-          </View>
+                  <View style={styles.apptRow}>
+                    <Ionicons
+                      name="checkmark-circle-outline"
+                      size={18}
+                      color="#16a34a"
+                      style={{ marginRight: 6 }}
+                    />
+                    <Text style={styles.apptStatus}>Status: Confirmed</Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
+          {dayRx.length > 0 && (
+            <View>
+              <Text style={styles.sectionHeading}>Prescriptions</Text>
+              {dayRx.map((s, i) => (
+                <View key={i} style={styles.rxCard}>
+                  <Ionicons
+                    name="medical-outline"
+                    size={18}
+                    color="#0f766e"
+                    style={{ marginRight: 6 }}
+                  />
+                  <Text style={styles.itemRow}>{s || "Prescription"}</Text>
+                </View>
+              ))}
+            </View>
+          )}
         </View>
-      </Modal>
+      )}
+
+      <TouchableOpacity
+        onPress={() => setDayModalOpen(false)}
+        style={{ alignSelf: "center", marginTop: 14 }}
+      >
+        <Text style={{ color: "#2563eb", fontWeight: "700" }}>Close</Text>
+      </TouchableOpacity>
+    </View>
+  </View>
+</Modal>
+
     </LinearGradient>
   );
 }
@@ -876,6 +943,37 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginBottom: 10,
   },
+  apptCard: {
+    backgroundColor: "#f1f5f9",
+    padding: 12,
+    borderRadius: 12,
+    marginTop: 6,
+  },
+  apptRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 2,
+  },
+  apptTime: {
+    fontWeight: "700",
+    color: "#0f172a",
+  },
+  apptDoctor: {
+    color: "#334155",
+  },
+  apptStatus: {
+    color: "#16a34a",
+    fontWeight: "600",
+  },
+  rxCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#ecfdf5",
+    padding: 10,
+    borderRadius: 10,
+    marginTop: 6,
+  },
+
 
   // Buttons
   btnAccept: {
@@ -896,3 +994,4 @@ const styles = StyleSheet.create({
   sectionHeading: { fontWeight: "800", marginBottom: 6, color: "#0f172a" },
   itemRow: { color: "#334155", marginBottom: 4 },
 });
+
