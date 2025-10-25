@@ -578,40 +578,40 @@ export default function AppointmentsScreen() {
             renderItem={({ item }) => (
               <Pressable
                 style={styles.card}
-                onPress={() => router.push(`/appointments/${item.id}`)}
+                // intentionally no onPress: clicking the card should not navigate to a detail page
                 android_ripple={{ color: '#E2E8F0' }}
               >
-                <View style={styles.cardRow}>
-                  <MaterialCommunityIcons name="calendar" size={28} color="#0EA5E9" />
-                  <View style={{ marginLeft: 12, flex: 1 }}>
-                    {/* primary counterpart (patient for doctors, doctor for patients) */}
-                    <Text style={styles.counterpartName}>
-                      {role === 'doctor' ? (item.patient_name ?? 'Patient') : (item.doctor_name ?? 'Doctor')}
-                    </Text>
-                    {/* show doctor's name when it's not already the primary counterpart */}
-                    {item.doctor_name && (role === 'doctor' || item.doctor_name !== (role === 'doctor' ? item.patient_name : item.doctor_name)) && (
-                      <Text style={styles.doctorText}>Dr. {item.doctor_name}</Text>
-                    )}
-                    {/* only show time range (HH:MM – HH:MM) */}
-                    <Text style={styles.timeText}>{formatTimeRange(item.starts_at, item.ends_at)}</Text>
-                  </View>
-                  <View style={{ alignItems: 'flex-end', gap: 8 }}>
-                    <StatusBadge status={item.status} />
-                    {/* action buttons visible only for people involved */}
-                    {user && (user.id === item.doctor_id || user.id === item.patient_id) && item.status !== 'cancelled' && (
-                      <View style={{ flexDirection: 'row', marginTop: 8 }}>
-                        <Pressable style={[styles.actionSmall, styles.actionSmallReschedule]} onPress={() => openReschedule(item)}>
-                          <Text style={[styles.actionSmallText, { color: '#fff' }]}>Reschedule</Text>
-                        </Pressable>
-                        <Pressable style={[styles.actionSmall, styles.actionSmallCancel]} onPress={() => cancelAppointment(item.id)}>
-                          <Text style={[styles.actionSmallText, { color: '#b91c1c' }]}>Cancel</Text>
-                        </Pressable>
-                      </View>
-                    )}
-                  </View>
-                </View>
+                 <View style={styles.cardRow}>
+                   <MaterialCommunityIcons name="calendar" size={28} color="#0EA5E9" />
+                   <View style={{ marginLeft: 12, flex: 1 }}>
+                     {/* primary counterpart (patient for doctors, doctor for patients) */}
+                     <Text style={styles.counterpartName}>
+                       {role === 'doctor' ? (item.patient_name ?? 'Patient') : (item.doctor_name ?? 'Doctor')}
+                     </Text>
+                     {/* show doctor's name when it's not already the primary counterpart */}
+                     {item.doctor_name && (role === 'doctor' || item.doctor_name !== (role === 'doctor' ? item.patient_name : item.doctor_name)) && (
+                       <Text style={styles.doctorText}>Dr. {item.doctor_name}</Text>
+                     )}
+                     {/* only show time range (HH:MM – HH:MM) */}
+                     <Text style={styles.timeText}>{formatTimeRange(item.starts_at, item.ends_at)}</Text>
+                   </View>
+                   <View style={{ alignItems: 'flex-end', gap: 8 }}>
+                     <StatusBadge status={item.status} />
+                     {/* action buttons visible only for people involved */}
+                     {user && (user.id === item.doctor_id || user.id === item.patient_id) && item.status !== 'cancelled' && (
+                       <View style={{ flexDirection: 'row', marginTop: 8 }}>
+                         <Pressable style={[styles.actionSmall, styles.actionSmallReschedule]} onPress={() => openReschedule(item)}>
+                           <Text style={[styles.actionSmallText, { color: '#fff' }]}>Reschedule</Text>
+                         </Pressable>
+                         <Pressable style={[styles.actionSmall, styles.actionSmallCancel]} onPress={() => cancelAppointment(item.id)}>
+                           <Text style={[styles.actionSmallText, { color: '#b91c1c' }]}>Cancel</Text>
+                         </Pressable>
+                       </View>
+                     )}
+                   </View>
+                 </View>
               </Pressable>
-            )}
+             )}
           />
         </View>
 
