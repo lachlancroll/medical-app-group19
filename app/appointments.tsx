@@ -64,6 +64,8 @@ export default function AppointmentsScreen() {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string>('');
 
+  const [refreshKey, setRefreshKey] = useState(0);
+
   /* ------------------- helpers (web URL params) ------------------- */
   const updateUrlParams = (from: string, to: string) => {
     if (!isWeb || typeof window === 'undefined') return;
@@ -198,7 +200,7 @@ export default function AppointmentsScreen() {
       }
     };
     run();
-  }, [user, role, fromDate, toDate]);
+  }, [user, role, fromDate, toDate, refreshKey]);
 
   /* -------------------------- pickers ----------------------------- */
   async function loadDoctorOptions(currentUserId: string, currentRole: UserRole) {
@@ -363,7 +365,7 @@ export default function AppointmentsScreen() {
       setSelDoctor('');
       setSelPatient('');
       Alert.alert('Success', 'Appointment created.');
-      setFromDate(f => f); // trigger refetch via dep
+      setRefreshKey(k => k + 1); // trigger refetch via dep
     } catch (e) {
       console.error('createAppointment fatal:', e);
       setCreateError('Unexpected error creating appointment.');
