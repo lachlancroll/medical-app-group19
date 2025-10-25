@@ -66,6 +66,9 @@ export default function AppointmentsScreen() {
 
   const [refreshKey, setRefreshKey] = useState(0);
 
+  // editing/reschedule state
+  const [editingId, setEditingId] = useState<string | null>(null);
+
   /* ------------------- helpers (web URL params) ------------------- */
   const updateUrlParams = (from: string, to: string) => {
     if (!isWeb || typeof window === 'undefined') return;
@@ -309,6 +312,22 @@ export default function AppointmentsScreen() {
     try {
       setCreating(true);
 
+      // permission guard for reschedule/edit: ensure current user is part of appointment
+      if (editingId) {
+        const appt = appointments.find(a => a.id === editingId);
+        if (!appt) {
+          setCreateError('Original appointment not found.');
+          setCreating(false);
+          return;
+        }
+        const allowed = user && (user.id === appt.doctor_id || user.id === appt.patient_id);
+        if (!allowed) {
+          setCreateError('You are not allowed to reschedule this appointment.');
+          setCreating(false);
+          return;
+        }
+      }
+
       // ---- HARD GUARD: Patients can only book with linked doctors ----
       // Applies when role is 'patient' OR 'both' while selecting a doctor.
       if ((role === 'patient' || role === 'both') && user?.id && doctor_id) {
@@ -345,32 +364,123 @@ export default function AppointmentsScreen() {
         return;
       }
 
-      const { error, status, statusText } = await supabase
-        .from('appointments')
-        .insert([{
-          starts_at,
-          ends_at,
-          doctor_id,
-          patient_id,
-          status: 'scheduled',
-          created_by: createdBy,
-        }]);
+      if (editingId) {
+        // update / reschedule existing appointment
+        const { error, status, statusText } = await supabase
+          .from('appointments')
+          .update({
+            starts_at,
+            ends_at,
+            doctor_id,
+            patient_id,
+            status: 'rescheduled',
+          })
+          .eq('id', editingId);
+        if (error) {
+          console.error('update appointment error:', { error, status, statusText });
+          setCreateError(error.message || 'Failed to update appointment.');
+          return;
+        }
+      } else {
+        const { error, status, statusText } = await supabase
+          .from('appointments')
+          .insert([{
+            starts_at,
+            ends_at,
+            doctor_id,
+            patient_id,
+            status: 'scheduled',
+            created_by: createdBy,
+          }]);
 
-      if (error) {
-        console.error('create appointment error:', { error, status, statusText });
-        setCreateError(error.message || 'Failed to create appointment.');
-        return;
+        if (error) {
+          console.error('create appointment error:', { error, status, statusText });
+          setCreateError(error.message || 'Failed to create appointment.');
+          return;
+        }
       }
       setModalOpen(false);
       setSelDoctor('');
       setSelPatient('');
-      Alert.alert('Success', 'Appointment created.');
+      setEditingId(null);
+      Alert.alert('Success', editingId ? 'Appointment rescheduled.' : 'Appointment created.');
       setRefreshKey(k => k + 1); // trigger refetch via dep
     } catch (e) {
       console.error('createAppointment fatal:', e);
       setCreateError('Unexpected error creating appointment.');
     } finally {
       setCreating(false);
+    }
+  };
+
+  /* ---------------------- cancel / reschedule --------------------- */
+  const cancelAppointment = async (id: string) => {
+    const appt = appointments.find(a => a.id === id);
+    if (!appt) {
+      Alert.alert('Error', 'Appointment not found.');
+      return;
+    }
+    const allowed = user && (user.id === appt.doctor_id || user.id === appt.patient_id);
+    if (!allowed) {
+      Alert.alert('Not allowed', 'You are not allowed to cancel this appointment.');
+      return;
+    }
+    Alert.alert('Confirm', 'Cancel this appointment?', [
+      { text: 'No', style: 'cancel' },
+      {
+        text: 'Yes',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            const { error } = await supabase.from('appointments').update({ status: 'cancelled' }).eq('id', id);
+            if (error) {
+              console.error('cancel error:', error);
+              Alert.alert('Error', 'Failed to cancel.');
+              return;
+            }
+            setRefreshKey(k => k + 1);
+            Alert.alert('Cancelled', 'Appointment has been cancelled.');
+          } catch (e) {
+            console.error('cancel fatal:', e);
+            Alert.alert('Error', 'Unexpected error cancelling appointment.');
+          }
+        }
+      }
+    ]);
+  };
+
+  const openReschedule = (a: AppointmentRow) => {
+    // prefill modal fields without converting to UTC (avoid timezone date shifts)
+    try {
+      setEditingId(a.id);
+      setSelDoctor(a.doctor_id ?? '');
+      setSelPatient(a.patient_id ?? '');
+
+      // expected formats: "YYYY-MM-DDTHH:MM:SS" or "YYYY-MM-DDTHH:MM:SSZ" or with timezone offset
+      const startMatch = String(a.starts_at).match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
+      const endMatch = String(a.ends_at).match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
+
+      if (startMatch) {
+        setDateStr(startMatch[1]);
+        setStartStr(startMatch[2]);
+      } else {
+        // fallback to Date-based extraction if the format is unexpected
+        const s = new Date(a.starts_at);
+        setDateStr(!isNaN(+s) ? s.toISOString().slice(0, 10) : '');
+        setStartStr(!isNaN(+s) ? s.toISOString().slice(11, 16) : '09:00');
+      }
+
+      if (endMatch) {
+        setEndStr(endMatch[2]);
+      } else {
+        const e = new Date(a.ends_at);
+        setEndStr(!isNaN(+e) ? e.toISOString().slice(11, 16) : '09:30');
+      }
+
+      setModalOpen(true);
+    } catch (err) {
+      console.warn('openReschedule failed:', err);
+      Alert.alert('Error', 'Could not open reschedule modal.');
     }
   };
 
@@ -473,7 +583,20 @@ export default function AppointmentsScreen() {
                     </Text>
                     <Text style={styles.timeText}>{formatRange(item.starts_at, item.ends_at)}</Text>
                   </View>
-                  <StatusBadge status={item.status} />
+                  <View style={{ alignItems: 'flex-end', gap: 8 }}>
+                    <StatusBadge status={item.status} />
+                    {/* action buttons visible only for people involved */}
+                    {user && (user.id === item.doctor_id || user.id === item.patient_id) && item.status !== 'cancelled' && (
+                      <View style={{ flexDirection: 'row', marginTop: 8 }}>
+                        <Pressable style={[styles.actionSmall, styles.actionSmallReschedule]} onPress={() => openReschedule(item)}>
+                          <Text style={[styles.actionSmallText, { color: '#fff' }]}>Reschedule</Text>
+                        </Pressable>
+                        <Pressable style={[styles.actionSmall, styles.actionSmallCancel]} onPress={() => cancelAppointment(item.id)}>
+                          <Text style={[styles.actionSmallText, { color: '#b91c1c' }]}>Cancel</Text>
+                        </Pressable>
+                      </View>
+                    )}
+                  </View>
                 </View>
               </Pressable>
             )}
@@ -492,7 +615,7 @@ export default function AppointmentsScreen() {
       <Modal visible={modalOpen} animationType="slide" transparent>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>New Appointment</Text>
+            <Text style={styles.modalTitle}>{editingId ? 'Reschedule Appointment' : 'New Appointment'}</Text>
             <ScrollView contentContainerStyle={{ paddingBottom: 8 }}>
               {(role === 'patient' || role === 'both') && (
                 <>
@@ -580,7 +703,7 @@ export default function AppointmentsScreen() {
                 onPress={createAppointment}
                 disabled={creating}
               >
-                {creating ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveText}>Save</Text>}
+                {creating ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveText}>{editingId ? 'Update' : 'Save'}</Text>}
               </Pressable>
             </View>
           </View>
@@ -727,6 +850,11 @@ const styles = StyleSheet.create({
   saveBtn: { backgroundColor: '#0EA5E9' },
   cancelText: { color: '#0F172A', fontWeight: '700' },
   saveText: { color: '#fff', fontWeight: '700' },
+
+  actionSmall: { paddingHorizontal: 8, paddingVertical: 6, borderRadius: 8, marginLeft: 8, justifyContent: 'center', alignItems: 'center' },
+  actionSmallText: { fontWeight: '700', fontSize: 12 },
+  actionSmallCancel: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#FCA5A5' },
+  actionSmallReschedule: { backgroundColor: '#0EA5E9' },
 
   fab: {
     position: 'absolute',
