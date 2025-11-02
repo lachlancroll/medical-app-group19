@@ -64,9 +64,7 @@ function PatientHome({ router }: { user?: any; router: any }) {
   const [rxDates, setRxDates] = useState<string[]>([]);
   const [rxByDate, setRxByDate] = useState<Record<string, string[]>>({});
   const [apptDates, setApptDates] = useState<string[]>([]);
-  // add cancelled dates state
   const [cancelledApptDates, setCancelledApptDates] = useState<string[]>([]);
-  // store appointments as objects so we can include doctor name:
   const [apptByDate, setApptByDate] = useState<
     Record<string, { timeLabel: string; doctorName: string; status?: string }[]>
   >({});
@@ -231,13 +229,13 @@ function PatientHome({ router }: { user?: any; router: any }) {
           .lte("starts_at", `${monthEndISO}T23:59:59`);
         if (apErr) throw apErr;
 
-        // use sets to avoid duplicates and to separate cancelled dates
         const confirmedSet = new Set<string>();
         const cancelledSet = new Set<string>();
-        const aMap: Record<string, { timeLabel: string; doctorName: string; status?: string }[]> =
-          {};
+        const aMap: Record<
+          string,
+          { timeLabel: string; doctorName: string; status?: string }[]
+        > = {};
 
-        // gather doctor ids to fetch names
         const doctorIds = Array.from(
           new Set((appts || []).map((a: any) => a.doctor_id))
         );
@@ -319,7 +317,7 @@ function PatientHome({ router }: { user?: any; router: any }) {
         .from("patient_link_requests")
         .delete()
         .eq("id", reqId);
-    if (error) throw error;
+      if (error) throw error;
 
       const remaining = requests.filter((r) => r.id !== reqId);
       setRequests(remaining);
@@ -497,19 +495,35 @@ function PatientHome({ router }: { user?: any; router: any }) {
                         </View>
                         <View style={styles.apptRow}>
                           <Ionicons
-                            name={ (typeof t !== "string" && (t.status === "cancelled" || t.status === "canceled")) ? "close-circle-outline" : "checkmark-circle-outline"}
+                            name={
+                              (typeof t !== "string" &&
+                                (t.status === "cancelled" || t.status === "canceled"))
+                                ? "close-circle-outline"
+                                : "checkmark-circle-outline"
+                            }
                             size={18}
-                            color={ (typeof t !== "string" && (t.status === "cancelled" || t.status === "canceled")) ? "#ef4444" : "#16a34a"}
+                            color={
+                              (typeof t !== "string" &&
+                                (t.status === "cancelled" || t.status === "canceled"))
+                                ? "#ef4444"
+                                : "#16a34a"
+                            }
                             style={{ marginRight: 6 }}
                           />
-                          <Text style={[
-                            styles.apptStatus,
-                            (typeof t !== "string" && (t.status === "cancelled" || t.status === "canceled")) && styles.apptStatusCancelled
-                          ]}>
+                          <Text
+                            style={[
+                              styles.apptStatus,
+                              (typeof t !== "string" &&
+                                (t.status === "cancelled" || t.status === "canceled")) &&
+                                styles.apptStatusCancelled,
+                            ]}
+                          >
                             {`Status: ${
                               typeof t === "string"
                                 ? "Confirmed"
-                                : (t.status ? (t.status.charAt(0).toUpperCase() + t.status.slice(1)) : "Confirmed")
+                                : (t.status
+                                  ? t.status.charAt(0).toUpperCase() + t.status.slice(1)
+                                  : "Confirmed")
                             }`}
                           </Text>
                         </View>
@@ -545,7 +559,6 @@ function PatientHome({ router }: { user?: any; router: any }) {
           </View>
         </View>
       </Modal>
-
     </LinearGradient>
   );
 }
@@ -554,11 +567,10 @@ function PatientHome({ router }: { user?: any; router: any }) {
 /*  DOCTOR HOME                                                               */
 /* -------------------------------------------------------------------------- */
 function DoctorHome({ user, router }: { user: any; router: any }) {
-  const [appointments, setAppointments] = useState<{ starts_at: string; status?: string }[]>(
-    []
-  );
+  const [appointments, setAppointments] = useState<
+    { starts_at: string; status?: string }[]
+  >([]);
   const [loadingAppointments, setLoadingAppointments] = useState(true);
-  // add cancelled dates state
   const [cancelledDates, setCancelledDates] = useState<string[]>([]);
 
   useEffect(() => {
@@ -573,11 +585,13 @@ function DoctorHome({ user, router }: { user: any; router: any }) {
         setAppointments([]);
       } else {
         setAppointments(data || []);
-        // compute cancelled dates for doctor calendar
         const cSet = new Set<string>();
         (data || []).forEach((a: any) => {
-          if ((a.status || "").toLowerCase() === "cancelled" || (a.status || "").toLowerCase() === "canceled") {
-            cSet.add(a.starts_at.slice(0,10));
+          if (
+            (a.status || "").toLowerCase() === "cancelled" ||
+            (a.status || "").toLowerCase() === "canceled"
+          ) {
+            cSet.add(a.starts_at.slice(0, 10));
           }
         });
         setCancelledDates(Array.from(cSet));
@@ -588,7 +602,14 @@ function DoctorHome({ user, router }: { user: any; router: any }) {
   }, [user.id]);
 
   const appointmentDates = useMemo(
-    () => appointments.filter(a => (a.status || "").toLowerCase() !== "cancelled" && (a.status || "").toLowerCase() !== "canceled").map((a) => a.starts_at.slice(0, 10)),
+    () =>
+      appointments
+        .filter(
+          (a) =>
+            (a.status || "").toLowerCase() !== "cancelled" &&
+            (a.status || "").toLowerCase() !== "canceled"
+        )
+        .map((a) => a.starts_at.slice(0, 10)),
     [appointments]
   );
 
@@ -697,7 +718,7 @@ function LargeActionButton({
 }
 
 /* ---- SimpleCalendar ---- */
-function SimpleCalendar({
+export function SimpleCalendar({
   highlightDates = [],
   prescriptionDates = [],
   cancelledDates = [],
@@ -722,6 +743,7 @@ function SimpleCalendar({
 
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const startOfMonth = new Date(year, month, 1);
+  // Monday-start calendar
   const startIndex = (startOfMonth.getDay() + 6) % 7;
 
   const prevMonthDays = new Date(year, month, 0).getDate();
@@ -745,10 +767,13 @@ function SimpleCalendar({
     d === today.getDate() &&
     month === today.getMonth() &&
     year === today.getFullYear();
+
   const getDateStr = (d: number) =>
     `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
   const isHighlighted = (d: number) => highlightDates.includes(getDateStr(d));
   const isRx = (d: number) => prescriptionDates.includes(getDateStr(d));
+  const isCancelled = (d: number) => cancelledDates.includes(getDateStr(d));
+
   const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   const weeks = [];
   for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
@@ -766,6 +791,7 @@ function SimpleCalendar({
       <View style={styles.calendarHeader}>
         <Text style={styles.calendarTitle}>{monthLabel}</Text>
       </View>
+
       <View style={styles.dowRow}>
         {DOW.map((d) => (
           <Text key={d} style={styles.dowText}>
@@ -773,6 +799,7 @@ function SimpleCalendar({
           </Text>
         ))}
       </View>
+
       <View>
         {weeks.map((week, wi) => (
           <View key={wi} style={styles.weekRow}>
@@ -782,12 +809,23 @@ function SimpleCalendar({
                 const todayCell = isToday(c.day);
                 const hl = isHighlighted(c.day);
                 const rx = isRx(c.day);
-                const cancelled = cancelledDates.includes(dateStr);
+                const cancelled = isCancelled(c.day);
+
+                const a11yParts = ["date", dateStr];
+                if (todayCell) a11yParts.push("today");
+                if (hl) a11yParts.push("highlight");
+                if (rx) a11yParts.push("rx");
+                if (cancelled) a11yParts.push("cancelled");
+                const a11y = a11yParts.join(" ");
+
                 return (
                   <Pressable
                     key={ci}
                     style={styles.cellFixed}
                     onPress={onDatePress ? () => onDatePress(dateStr) : undefined}
+                    accessibilityRole="button"
+                    accessibilityLabel={a11y}
+                    testID={`cell-${dateStr}`}
                   >
                     <RxRing active={rx}>
                       {cancelled ? (
@@ -1015,7 +1053,6 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
 
-
   // Buttons
   btnAccept: {
     flex: 1,
@@ -1046,4 +1083,3 @@ const styles = StyleSheet.create({
   },
   cancelledText: { color: "#fff", fontWeight: "800", fontSize: 16 },
 });
-
